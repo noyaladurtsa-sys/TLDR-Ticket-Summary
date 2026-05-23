@@ -1,0 +1,9 @@
+http://localhost:8501/
+make u a poatgres local database
+
+Save this project to github using this link: 
+https://github.com/noyaladurtsa-sys/TLDR-Ticket-Summary.git
+
+
+cd "C:\Users\Ashley-Admin\Desktop\Claude\Project\Happy Link Claude TLDR Ticket Summary"
+streamlit run app.py
