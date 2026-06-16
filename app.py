@@ -288,6 +288,217 @@ def iter_update_actions(ticket: dict):
         yield display, timestamp, " · ".join(parts)
 
 
+def _clean_agent_name(raw: str) -> str:
+    """Strip @concentrix.com / @linksys.com emails to readable names."""
+    import re as _re
+    raw = raw.strip()
+    if "@" in raw and ("concentrix.com" in raw.lower() or "linksys.com" in raw.lower()):
+        local = raw.split("@")[0]
+        parts = _re.split(r'[._]', local)
+        return " ".join(p.capitalize() for p in parts if p)
+    return raw
+
+
+def _detect_update_flags(u: dict, prev_status: str | None) -> list[tuple[str, str]]:
+    """Return list of (flag_type, label) for a single update."""
+    flags = []
+    sc = u.get("status_change")
+    if sc:
+        new = (sc.get("new_name") or "").lower()
+        old = (sc.get("old_name") or "").lower()
+        if new in ("resolved", "closed") and old not in ("resolved", "closed"):
+            flags.append(("close", "Premature close"))
+        if new in ("escalated",):
+            flags.append(("escalation", "Escalated"))
+        if new in ("updated",) and old in ("resolved", "closed"):
+            flags.append(("reopen", "Reopened"))
+    ac = u.get("assignee_change")
+    if ac and "escalat" in (ac.get("new_name") or "").lower():
+        flags.append(("escalation", "Re-escalated"))
+    msg = u.get("message") or {}
+    msg_text = ""
+    if isinstance(msg, dict):
+        msg_text = (msg.get("text") or msg.get("html") or "").strip()
+    if not msg_text:
+        msg_text = (u.get("text") or u.get("html") or u.get("body") or "").strip()
+    msg_lower = msg_text.lower()
+    frustration_keywords = ["legal", "attorney", "lawyer", "unacceptable", "scrapped", "disgusted",
+                            "hours late", "no results", "worst", "never again"]
+    if any(kw in msg_lower for kw in frustration_keywords):
+        by = u.get("by") or {}
+        if by.get("type") == "user" or (not by.get("type") and "customer" in (by.get("name") or "").lower()):
+            flags.append(("frustration", "Frustrated"))
+    callback_keywords = ["call you back", "callback", "call back", "follow up", "follow-up",
+                         "reach out", "contact you within"]
+    if any(kw in msg_lower for kw in callback_keywords):
+        by = u.get("by") or {}
+        if by.get("type") != "user":
+            flags.append(("callback_promise", "Callback promised"))
+    return flags
+
+
+def build_session_groups(ticket: dict) -> list[dict]:
+    """Group ticket updates into logical sessions for the redesigned What Happened view.
+
+    Returns list of session dicts:
+      {"num": 1, "title": "...", "date_range": "...", "entries": [...], "summary_counts": {...}}
+    Each entry: {"name": "...", "actor": "agent|customer|system", "action": "...",
+                 "date": "...", "flags": [(type, label), ...]}
+    """
+    import re as _re
+    updates = ticket.get("updates", [])
+    customer_name = (ticket.get("user") or {}).get("name", "")
+    boilerplate = "Linksys Technical Support Case created."
+
+    entries = []
+    for u in updates:
+        if not isinstance(u, dict):
+            continue
+        by = u.get("by") or {}
+        agent_obj = u.get("agent") or {}
+        btype = by.get("type") or agent_obj.get("type") or ""
+        raw_name = by.get("name") or agent_obj.get("name") or ""
+        timestamp = (u.get("timestamp") or u.get("created_at") or "")[:10]
+
+        if btype == "smartrule":
+            continue
+
+        if not raw_name:
+            actor = "system"
+            clean_name = "System"
+        elif btype == "user" or raw_name == customer_name:
+            actor = "customer"
+            clean_name = _clean_agent_name(raw_name) if "@" in raw_name else raw_name
+        else:
+            actor = "agent"
+            clean_name = _clean_agent_name(raw_name)
+
+        parts = []
+        msg = u.get("message") or {}
+        msg_text = ""
+        if isinstance(msg, dict):
+            msg_text = (msg.get("text") or msg.get("html") or "").strip()
+        if not msg_text:
+            msg_text = (u.get("text") or u.get("html") or u.get("body") or "").strip()
+        if msg_text and not msg_text.startswith(boilerplate):
+            first_line = next((l.strip() for l in msg_text.splitlines() if l.strip()), "")
+            parts.append(first_line[:160] + ("…" if len(first_line) > 160 else ""))
+
+        sc = u.get("status_change")
+        if sc and sc.get("new_name"):
+            parts.append(f"Status: {sc.get('old_name') or '—'} → {sc['new_name']}")
+        ac = u.get("assignee_change")
+        if ac and ac.get("new_name"):
+            parts.append(f"Assigned to: {_clean_agent_name(ac['new_name'])}")
+        cc = u.get("category_change")
+        if cc and cc.get("new_name"):
+            parts.append(f"Category → {cc['new_name']}")
+
+        if not parts:
+            continue
+
+        flags = _detect_update_flags(u, None)
+        entries.append({
+            "name": clean_name,
+            "actor": actor,
+            "action": " · ".join(parts),
+            "date": timestamp,
+            "flags": flags,
+            "raw_status_change": sc,
+        })
+
+    if not entries:
+        return []
+
+    sessions = []
+    current_entries = [entries[0]]
+    session_start = entries[0]["date"]
+
+    for i in range(1, len(entries)):
+        e = entries[i]
+        prev = entries[i - 1]
+        new_session = False
+        if e["date"] != prev["date"]:
+            from datetime import datetime
+            try:
+                d1 = datetime.strptime(prev["date"], "%Y-%m-%d")
+                d2 = datetime.strptime(e["date"], "%Y-%m-%d")
+                if (d2 - d1).days >= 2:
+                    new_session = True
+            except ValueError:
+                pass
+        has_reopen = any(f[0] == "reopen" for f in e.get("flags", []))
+        has_escalation = any(f[0] == "escalation" for f in e.get("flags", []))
+        if has_reopen or (has_escalation and e["date"] != prev["date"]):
+            new_session = True
+
+        if new_session:
+            sessions.append({
+                "entries": current_entries,
+                "start_date": session_start,
+                "end_date": prev["date"],
+            })
+            current_entries = [e]
+            session_start = e["date"]
+        else:
+            current_entries.append(e)
+
+    sessions.append({
+        "entries": current_entries,
+        "start_date": session_start,
+        "end_date": entries[-1]["date"],
+    })
+
+    def _session_title(sess, idx):
+        flags_all = [f for e in sess["entries"] for f in e.get("flags", [])]
+        flag_types = {f[0] for f in flags_all}
+        actors = {e["actor"] for e in sess["entries"]}
+        has_customer = "customer" in actors
+
+        if idx == 0:
+            return "Initial contact"
+        if "reopen" in flag_types:
+            return "Customer reopened — issue persists"
+        if "escalation" in flag_types and "frustration" in flag_types:
+            return "Customer demands escalation"
+        if "escalation" in flag_types:
+            return "Escalation to L2"
+        if "frustration" in flag_types:
+            return "Customer frustrated — risk of churn"
+        if has_customer and any("close" == f[0] for f in flags_all):
+            return "Follow-up attempts"
+        if len(sess["entries"]) <= 2 and not has_customer:
+            return "Internal review"
+        return "Follow-up & resolution"
+
+    def _format_date_range(start, end):
+        from datetime import datetime
+        try:
+            d1 = datetime.strptime(start, "%Y-%m-%d")
+            d2 = datetime.strptime(end, "%Y-%m-%d")
+            if start == end:
+                return d1.strftime("%b %d")
+            if d1.month == d2.month:
+                return f"{d1.strftime('%b %d')}–{d2.strftime('%d')}"
+            return f"{d1.strftime('%b %d')} – {d2.strftime('%b %d')}"
+        except ValueError:
+            return start if start == end else f"{start} – {end}"
+
+    result = []
+    for idx, sess in enumerate(sessions):
+        close_count = sum(1 for e in sess["entries"] for f in e.get("flags", []) if f[0] == "close")
+        breach_count = sum(1 for e in sess["entries"] for f in e.get("flags", []) if f[0] == "callback_promise")
+        esc_count = sum(1 for e in sess["entries"] for f in e.get("flags", []) if f[0] == "escalation")
+        result.append({
+            "num": idx + 1,
+            "title": _session_title(sess, idx),
+            "date_range": _format_date_range(sess["start_date"], sess["end_date"]),
+            "entries": sess["entries"],
+            "summary": {"closes": close_count, "breaches": breach_count, "escalations": esc_count},
+        })
+    return result
+
+
 def build_interaction_figures(timeline: list):
     """Build (sankey, donut, swimlane) Plotly figures for the interaction dashboard.
 
@@ -683,6 +894,32 @@ For "callback_breaches": count how many times a promised callback was missed, la
 For "coaching_priority": set to "URGENT" if any agent scored 1-2 on either dimension,
 "REVIEW" if any agent scored 3, or "GOOD" if all agents scored 4-5.
 
+PREMATURE CLOSE DETECTION — scan the full ticket lifecycle for this pattern:
+  1. Agent changes status to "Resolved" or "Closed"
+  2. Customer contacts back about the SAME issue (reopens, calls again, replies with same symptoms)
+  This is a "Premature Close" — the agent closed the ticket without a confirmed fix.
+  Count every occurrence. For each one, record which agent closed it, the date, and what happened next.
+  Also flag any "Observe and Close" pattern — agent tells customer to "observe" or "monitor" and then
+  closes the ticket without a follow-up. This is a KPI manipulation red flag.
+
+CALLBACK BREACH DETECTION — scan every agent message for callback promises:
+  Look for language like "I will call you back in X minutes/hours", "expect a callback", "I'll follow up",
+  "we will reach out", "I'll contact you within". For each promise found:
+  1. Record the agent name, the promise text, and the promised timeframe
+  2. Check if a follow-up from that agent (or any agent) actually happened within the promised window
+  3. Mark as "Honored" or "Breached" with the actual delay if breached
+  A broken callback to a frustrated customer is a critical failure.
+
+COMPLEX ENVIRONMENT CHECKLIST — if the ticket involves a mesh network with 4+ nodes,
+  a large property (4000+ sqft), or mixed hardware generations, auto-evaluate whether agents completed:
+  1. Node Inventory: Did any agent document exact model, serial, and placement of every node?
+  2. RSSI/Signal Check: Were signal strength readings captured? Any node worse than -65 dBm?
+  3. Wired Bypass Test: Was a direct-to-modem Ethernet test performed to isolate the fault domain?
+  4. Topology Reconciliation: Did agents agree on the number of nodes, or were there conflicting counts?
+  5. Firmware Consistency: Was firmware version checked/matched across all nodes?
+  Mark each item as "Done", "Skipped", or "Not Applicable". This is only required when the environment
+  qualifies as complex (4+ nodes or mixed hardware). Set "complex_environment" to false otherwise.
+
 Respond with a single valid JSON object only. No markdown, no explanation — raw JSON only.
 
 {
@@ -719,6 +956,25 @@ Respond with a single valid JSON object only. No markdown, no explanation — ra
   "case_verdict": "2-3 sentence executive verdict on case outcome, biggest risk, and recommendation.",
   "callback_breaches": 0,
   "coaching_priority": "URGENT / REVIEW / GOOD",
+  "premature_closes": [
+    {"agent": "Agent who closed", "date": "YYYY-MM-DD", "what_happened": "Customer called back 2 days later with same issue", "pattern": "Observe and Close / Unconfirmed Resolution"}
+  ],
+  "callback_promise_log": [
+    {"agent": "Agent Name", "promise": "Exact quote or paraphrase of the callback promise", "promised_timeframe": "30 minutes / 1 hour / next day", "actual_followup": "Honored — called back in 25 min / Breached — no follow-up for 3 hours / Breached — never followed up", "status": "Honored / Breached"}
+  ],
+  "complex_environment": true or false,
+  "environment_checklist": {
+    "node_inventory": "Done / Skipped / Not Applicable",
+    "node_inventory_detail": "Agent X documented 6 nodes with serials on Day 3 / No agent ever reconciled node count",
+    "rssi_signal_check": "Done / Skipped / Not Applicable",
+    "rssi_detail": "Aysah recorded -76 dBm on Child Node 2 / No RSSI readings captured",
+    "wired_bypass_test": "Done / Skipped / Not Applicable",
+    "wired_bypass_detail": "Eric performed wired test on Day 14 / Never attempted despite 3 weeks of troubleshooting",
+    "topology_reconciliation": "Done / Skipped / Not Applicable",
+    "topology_detail": "Conflicting counts: 3, 6, 8, 11 nodes reported across sessions / Consistent 4-node count",
+    "firmware_consistency": "Done / Skipped / Not Applicable",
+    "firmware_detail": "All nodes confirmed on FW 1.0.11 / Mixed firmware versions not checked"
+  },
   "timeline": [
     {"date": "YYYY-MM-DD", "author": "Name or Customer", "summary": "One sentence of what happened"}
   ]
@@ -1160,6 +1416,85 @@ def _build_coaching_notes_html(notes: list, esc) -> str:
     return "".join(items)
 
 
+def _build_premature_closes_html(closes: list, esc) -> str:
+    if not closes:
+        return ""
+    items = []
+    for pc in closes:
+        if not isinstance(pc, dict):
+            continue
+        pattern = pc.get("pattern", "")
+        bg = "#fef2f2" if "Observe" in pattern else "#fff7ed"
+        border = "#ef4444" if "Observe" in pattern else "#f97316"
+        items.append(
+            f"<div style='background:{bg};border-left:4px solid {border};border-radius:0 6px 6px 0;padding:10px 14px;margin:6px 0;'>"
+            f"<p style='margin:0 0 3px;font-weight:700;font-size:11px;color:#991b1b;'>{esc(pc.get('agent',''))} — {esc(pc.get('date',''))}</p>"
+            f"<p style='margin:0 0 3px;font-size:11px;color:#7f1d1d;'>{esc(pc.get('what_happened',''))}</p>"
+            f"<p style='margin:0;font-size:10px;color:#9a3412;font-style:italic;'>Pattern: {esc(pattern)}</p>"
+            f"</div>"
+        )
+    return "".join(items)
+
+
+def _build_callback_tracker_html(log: list, esc) -> str:
+    if not log:
+        return ""
+    rows = ""
+    for cb in log:
+        if not isinstance(cb, dict):
+            continue
+        is_breach = cb.get("status") == "Breached"
+        row_bg = "#fef2f2" if is_breach else "#f0fdf4"
+        s_color = "#ef4444" if is_breach else "#16a34a"
+        s_icon = "&#10060;" if is_breach else "&#9989;"
+        rows += (
+            f"<tr style='background:{row_bg};'>"
+            f"<td style='font-weight:600;'>{esc(cb.get('agent',''))}</td>"
+            f"<td style='font-size:10px;'>{esc(cb.get('promise',''))}</td>"
+            f"<td style='text-align:center;'>{esc(cb.get('promised_timeframe',''))}</td>"
+            f"<td style='font-size:10px;'>{esc(cb.get('actual_followup',''))}</td>"
+            f"<td style='text-align:center;color:{s_color};font-weight:700;'>{s_icon} {esc(cb.get('status',''))}</td>"
+            f"</tr>"
+        )
+    return (
+        "<table><tr><th>Agent</th><th>Promise</th><th>Timeframe</th>"
+        "<th>Actual Follow-up</th><th>Status</th></tr>"
+        + rows + "</table>"
+    )
+
+
+def _build_env_checklist_html(ai: dict, esc) -> str:
+    if not ai.get("complex_environment"):
+        return ""
+    env = ai.get("environment_checklist", {})
+    if not env:
+        return ""
+    checks = [
+        ("Node Inventory", "node_inventory", "node_inventory_detail"),
+        ("RSSI / Signal Check", "rssi_signal_check", "rssi_detail"),
+        ("Wired Bypass Test", "wired_bypass_test", "wired_bypass_detail"),
+        ("Topology Reconciliation", "topology_reconciliation", "topology_detail"),
+        ("Firmware Consistency", "firmware_consistency", "firmware_detail"),
+    ]
+    items = []
+    for label, key, detail_key in checks:
+        status = env.get(key, "Not Applicable")
+        detail = env.get(detail_key, "")
+        if status == "Done":
+            icon, bg, border = "&#9989;", "#f0fdf4", "#16a34a"
+        elif status == "Skipped":
+            icon, bg, border = "&#10060;", "#fef2f2", "#ef4444"
+        else:
+            icon, bg, border = "&#11036;", "#f8fafc", "#d1d5db"
+        items.append(
+            f"<div style='background:{bg};border-left:4px solid {border};border-radius:0 6px 6px 0;padding:8px 14px;margin:4px 0;'>"
+            f"<p style='margin:0;font-size:12px;'>{icon} <strong>{esc(label)}:</strong> <span style='color:#6b7280;font-size:11px;margin-left:6px;'>{esc(status)}</span></p>"
+            f"<p style='margin:2px 0 0;font-size:10px;color:#4b5563;'>{esc(detail)}</p>"
+            f"</div>"
+        )
+    return "".join(items)
+
+
 # ── HTML / PDF report ─────────────────────────────────────────────────────────
 def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) -> str:
     def esc(x):  # escape all dynamic content before it reaches the page (non-str safe)
@@ -1183,16 +1518,57 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
     steps_html  = "".join(f"<li>{esc(s)}</li>" for s in ai.get("next_steps", []))
     opps_html_r = "".join(f"<li>{esc(o)}</li>" for o in ai.get("opportunities", [])) or "<li>No issues identified.</li>"
 
-    # Build actions list from ALL raw ticket updates (shared with the on-screen view)
+    # Build session-grouped actions block for the HTML report
     def _build_actions_block(ticket_obj):
-        items = [
-            f"<li>"
-            f"<span style='color:#1B3A6B;font-weight:700;'>[{esc(display)} &middot; {esc(timestamp)}]</span> "
-            f"{esc(desc)}"
-            f"</li>"
-            for display, timestamp, desc in iter_update_actions(ticket_obj)
-        ]
-        return "<ul style='line-height:1.9;'>" + "".join(items) + "</ul>" if items else "<p>No update data available.</p>"
+        sessions = build_session_groups(ticket_obj)
+        if not sessions:
+            return "<p>No update data available.</p>"
+        _flag_styles = {
+            "close": ("background:#fef2f2;color:#991b1b;", "⚠️ Premature close"),
+            "reopen": ("background:#fffbea;color:#854f0b;", "🔄 Reopened"),
+            "escalation": ("background:#fff7ed;color:#9a3412;", "⬆️ Escalated"),
+            "frustration": ("background:#fffbea;color:#854f0b;", "😤 Frustrated"),
+            "callback_promise": ("background:#eef3fb;color:#1B3A6B;", "📞 Callback promised"),
+        }
+        _dot_c = {"agent": "#378ADD", "customer": "#1D9E75", "system": "#B4B2A9"}
+        _nm_c = {"agent": "#185FA5", "customer": "#0F6E56", "system": "#9ca3af"}
+        parts = []
+        parts.append(
+            "<div style='display:flex;gap:16px;margin-bottom:10px;padding:6px 10px;"
+            "background:#f8fafc;border-radius:4px;font-size:10px;color:#6b7280;flex-wrap:wrap;'>"
+            "<span>● Agent</span> <span style='color:#1D9E75;'>● Customer</span> "
+            "<span style='color:#B4B2A9;'>● System</span>"
+            "</div>"
+        )
+        for sess in sessions:
+            parts.append(
+                f"<div style='margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid #e5e7eb;'>"
+                f"<span style='background:#f1f5f9;color:#6b7280;font-size:10px;font-weight:600;"
+                f"padding:2px 6px;border-radius:3px;'>Session {sess['num']}</span> "
+                f"<span style='font-weight:600;font-size:12px;color:#1B3A6B;'>{esc(sess['title'])}</span>"
+                f"<span style='font-size:10px;color:#9ca3af;float:right;'>{esc(sess['date_range'])}</span>"
+                f"</div>"
+            )
+            for e in sess["entries"]:
+                dc = _dot_c.get(e["actor"], "#B4B2A9")
+                nc = _nm_c.get(e["actor"], "#6b7280")
+                ns = "font-style:italic;" if e["actor"] == "system" else ""
+                flags_h = ""
+                for ft, fl in e.get("flags", []):
+                    fs, fl_label = _flag_styles.get(ft, ("background:#f8fafc;color:#6b7280;", fl))
+                    flags_h += f" <span style='{fs}font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;'>{fl_label}</span>"
+                parts.append(
+                    f"<div style='display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f8fafc;"
+                    f"align-items:flex-start;font-size:11px;'>"
+                    f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;"
+                    f"background:{dc};margin-top:4px;flex-shrink:0;'></span>"
+                    f"<span style='font-weight:600;min-width:110px;flex-shrink:0;color:{nc};{ns}'>"
+                    f"{esc(e['name'])}</span>"
+                    f"<span style='flex:1;color:#374151;line-height:1.5;'>"
+                    f"{esc(e['action'])}{flags_h}</span>"
+                    f"</div>"
+                )
+        return "".join(parts)
 
     actions_block = _build_actions_block(ticket)
 
@@ -1360,6 +1736,15 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 
 {_det("🎓 Coaching Notes (" + str(len(ai.get('coaching_notes', []))) + ")",
   _build_coaching_notes_html(ai.get('coaching_notes', []), esc), "")}
+
+{_det("🚫 Premature Closes (" + str(len(ai.get('premature_closes', []))) + ")",
+  _build_premature_closes_html(ai.get('premature_closes', []), esc), "")}
+
+{_det("📞 Callback Tracker",
+  _build_callback_tracker_html(ai.get('callback_promise_log', []), esc), "")}
+
+{_det("🏠 Complex Environment Checklist",
+  _build_env_checklist_html(ai, esc), "")}
 
 {_det("🎯 Executive Interaction Dashboard", _dash_inner, "")}
 
@@ -1835,6 +2220,96 @@ if "ticket" in st.session_state:
                     unsafe_allow_html=True,
                 )
 
+    # ── Premature Close Detection ────────────────────────────────────────────
+    _pc_list = ai.get("premature_closes", [])
+    if _pc_list:
+        with st.expander(f"🚫 Premature Closes ({len(_pc_list)})", expanded=False):
+            for _pc in _pc_list:
+                if not isinstance(_pc, dict):
+                    continue
+                _pc_pattern = _pc.get("pattern", "")
+                _pc_bg = "#fef2f2" if "Observe" in _pc_pattern else "#fff7ed"
+                _pc_border = "#ef4444" if "Observe" in _pc_pattern else "#f97316"
+                st.markdown(
+                    f"""<div style='background:{_pc_bg};border-left:4px solid {_pc_border};border-radius:0 6px 6px 0;padding:10px 14px;margin:6px 0;'>
+                        <p style='margin:0 0 3px;font-size:12px;font-weight:700;color:#991b1b;'>
+                            {html.escape(str(_pc.get('agent', '')))} — {html.escape(str(_pc.get('date', '')))}
+                        </p>
+                        <p style='margin:0 0 3px;font-size:12px;color:#7f1d1d;'>{html.escape(str(_pc.get('what_happened', '')))}</p>
+                        <p style='margin:0;font-size:11px;color:#9a3412;font-style:italic;'>Pattern: {html.escape(_pc_pattern)}</p>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+    # ── Callback Breach Tracker ──────────────────────────────────────────────
+    _cb_log = ai.get("callback_promise_log", [])
+    if _cb_log:
+        _breached = [c for c in _cb_log if isinstance(c, dict) and c.get("status") == "Breached"]
+        _honored = [c for c in _cb_log if isinstance(c, dict) and c.get("status") == "Honored"]
+        _cb_label = f"📞 Callback Tracker ({len(_breached)} breached / {len(_honored)} honored)"
+        with st.expander(_cb_label, expanded=False):
+            _cb_rows = ""
+            for _cb in _cb_log:
+                if not isinstance(_cb, dict):
+                    continue
+                _is_breach = _cb.get("status") == "Breached"
+                _row_bg = "#fef2f2" if _is_breach else "#f0fdf4"
+                _status_color = "#ef4444" if _is_breach else "#16a34a"
+                _status_icon = "❌" if _is_breach else "✅"
+                _cb_rows += (
+                    f"<tr style='background:{_row_bg};'>"
+                    f"<td style='font-weight:600;'>{html.escape(str(_cb.get('agent', '')))}</td>"
+                    f"<td style='font-size:11px;'>{html.escape(str(_cb.get('promise', '')))}</td>"
+                    f"<td style='text-align:center;'>{html.escape(str(_cb.get('promised_timeframe', '')))}</td>"
+                    f"<td style='font-size:11px;'>{html.escape(str(_cb.get('actual_followup', '')))}</td>"
+                    f"<td style='text-align:center;color:{_status_color};font-weight:700;'>{_status_icon} {html.escape(str(_cb.get('status', '')))}</td>"
+                    f"</tr>"
+                )
+            st.markdown(
+                f"""<table style='border-collapse:collapse;width:100%;font-family:Segoe UI,sans-serif;font-size:12px;'>
+                <thead><tr style='background:#1B3A6B;color:white;'>
+                    <th style='padding:8px 10px;text-align:left;'>Agent</th>
+                    <th style='padding:8px 10px;text-align:left;'>Promise</th>
+                    <th style='padding:8px 10px;text-align:center;'>Timeframe</th>
+                    <th style='padding:8px 10px;text-align:left;'>Actual Follow-up</th>
+                    <th style='padding:8px 10px;text-align:center;'>Status</th>
+                </tr></thead>
+                <tbody>{_cb_rows}</tbody></table>""",
+                unsafe_allow_html=True,
+            )
+
+    # ── Complex Environment Checklist ────────────────────────────────────────
+    _is_complex = ai.get("complex_environment", False)
+    _env_check = ai.get("environment_checklist", {})
+    if _is_complex and _env_check:
+        with st.expander("🏠 Complex Environment Checklist", expanded=False):
+            _check_items = [
+                ("Node Inventory", "node_inventory", "node_inventory_detail"),
+                ("RSSI / Signal Check", "rssi_signal_check", "rssi_detail"),
+                ("Wired Bypass Test", "wired_bypass_test", "wired_bypass_detail"),
+                ("Topology Reconciliation", "topology_reconciliation", "topology_detail"),
+                ("Firmware Consistency", "firmware_consistency", "firmware_detail"),
+            ]
+            for _label, _key, _detail_key in _check_items:
+                _status = _env_check.get(_key, "Not Applicable")
+                _detail = _env_check.get(_detail_key, "")
+                if _status == "Done":
+                    _icon, _bg, _border = "✅", "#f0fdf4", "#16a34a"
+                elif _status == "Skipped":
+                    _icon, _bg, _border = "❌", "#fef2f2", "#ef4444"
+                else:
+                    _icon, _bg, _border = "⬜", "#f8fafc", "#d1d5db"
+                st.markdown(
+                    f"""<div style='background:{_bg};border-left:4px solid {_border};border-radius:0 6px 6px 0;padding:8px 14px;margin:4px 0;'>
+                        <p style='margin:0;font-size:13px;'>
+                            {_icon} <strong>{html.escape(_label)}:</strong>
+                            <span style='color:#6b7280;font-size:11px;margin-left:6px;'>{html.escape(_status)}</span>
+                        </p>
+                        <p style='margin:2px 0 0;font-size:11px;color:#4b5563;'>{html.escape(_detail)}</p>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
     # ── Executive Interaction Dashboard ──────────────────────────────────────
     _figs = build_interaction_figures(timeline)
     if _figs:
@@ -1850,22 +2325,106 @@ if "ticket" in st.session_state:
         except Exception as _exc:
             st.error(f"Dashboard error: {_exc}")
 
-    # ── What Happened? (raw updates with agent names) ─────────────────────────
-    with st.expander("📋 What Happened?", expanded=False):
-        _wh_items = [
-            f"<li style='margin:4px 0;font-size:13px;line-height:1.7;'>"
-            f"<span style='color:#1B3A6B;font-weight:700;'>[{html.escape(_display)} &middot; {html.escape(_ts)}]</span> "
-            f"{html.escape(_desc)}"
-            f"</li>"
-            for _display, _ts, _desc in iter_update_actions(ticket)
-        ]
-        if _wh_items:
-            st.markdown(
-                "<ul style='padding-left:16px;margin:4px 0;'>" + "".join(_wh_items) + "</ul>",
-                unsafe_allow_html=True,
-            )
-        else:
+    # ── What Happened? (session-grouped, color-coded) ──────────────────────────
+    _sessions = build_session_groups(ticket)
+    with st.expander(f"📋 What Happened? ({len(_sessions)} sessions)", expanded=False):
+        if not _sessions:
             st.markdown("_No update data available._")
+        else:
+            _flag_colors = {
+                "close": ("#fef2f2", "#991b1b", "⚠️"),
+                "reopen": ("#fffbea", "#854f0b", "🔄"),
+                "escalation": ("#fff7ed", "#9a3412", "⬆️"),
+                "frustration": ("#fffbea", "#854f0b", "😤"),
+                "callback_promise": ("#eef3fb", "#1B3A6B", "📞"),
+            }
+            _dot_colors = {"agent": "#378ADD", "customer": "#1D9E75", "system": "#B4B2A9"}
+            _name_colors = {"agent": "#185FA5", "customer": "#0F6E56", "system": "#9ca3af"}
+            _legend = (
+                "<div style='display:flex;gap:16px;margin-bottom:12px;padding:8px 12px;"
+                "background:#f8fafc;border-radius:6px;flex-wrap:wrap;'>"
+                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#378ADD;'></span> Agent</div>"
+                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#1D9E75;'></span> Customer</div>"
+                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#B4B2A9;'></span> System</div>"
+                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                "<span style='background:#fef2f2;color:#991b1b;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;'>⚠️ Flag</span> Critical event</div>"
+                "</div>"
+            )
+            st.markdown(_legend, unsafe_allow_html=True)
+
+            _total_agents = set()
+            _total_closes = 0
+            _total_breaches = 0
+            _total_escalations = 0
+
+            for _sess in _sessions:
+                _sess_header = (
+                    f"<div style='display:flex;align-items:center;gap:8px;margin:16px 0 6px;padding-bottom:5px;"
+                    f"border-bottom:1px solid #e5e7eb;'>"
+                    f"<span style='background:#f1f5f9;color:#6b7280;font-size:11px;font-weight:600;padding:2px 8px;"
+                    f"border-radius:4px;'>Session {_sess['num']}</span>"
+                    f"<span style='font-weight:600;font-size:13px;color:#1B3A6B;'>{html.escape(_sess['title'])}</span>"
+                    f"<span style='font-size:11px;color:#9ca3af;margin-left:auto;'>{html.escape(_sess['date_range'])}</span>"
+                    f"</div>"
+                )
+                st.markdown(_sess_header, unsafe_allow_html=True)
+
+                for _e in _sess["entries"]:
+                    if _e["actor"] == "agent":
+                        _total_agents.add(_e["name"])
+                    _dot_c = _dot_colors.get(_e["actor"], "#B4B2A9")
+                    _nm_c = _name_colors.get(_e["actor"], "#6b7280")
+                    _nm_style = "font-style:italic;" if _e["actor"] == "system" else ""
+                    _flags_html = ""
+                    for _ft, _fl in _e.get("flags", []):
+                        _fb, _fc, _fi = _flag_colors.get(_ft, ("#f8fafc", "#6b7280", ""))
+                        _flags_html += (
+                            f" <span style='display:inline-flex;align-items:center;gap:2px;background:{_fb};"
+                            f"color:{_fc};font-size:10px;font-weight:700;padding:1px 6px;"
+                            f"border-radius:3px;margin-left:4px;'>{_fi} {html.escape(_fl)}</span>"
+                        )
+                        if _ft == "close":
+                            _total_closes += 1
+                        elif _ft == "escalation":
+                            _total_escalations += 1
+                        elif _ft == "callback_promise":
+                            _total_breaches += 1
+                    _entry_html = (
+                        f"<div style='display:flex;gap:10px;padding:5px 0;border-bottom:1px solid #f1f5f9;"
+                        f"align-items:flex-start;'>"
+                        f"<span style='display:inline-block;width:8px;height:8px;border-radius:50%;"
+                        f"background:{_dot_c};margin-top:5px;flex-shrink:0;'></span>"
+                        f"<span style='font-weight:600;min-width:130px;flex-shrink:0;font-size:12px;"
+                        f"color:{_nm_c};{_nm_style}'>{html.escape(_e['name'])}</span>"
+                        f"<span style='flex:1;font-size:12px;line-height:1.5;color:#374151;'>"
+                        f"{html.escape(_e['action'])}{_flags_html}</span>"
+                        f"</div>"
+                    )
+                    st.markdown(_entry_html, unsafe_allow_html=True)
+
+            _first_date = _sessions[0]["entries"][0]["date"] if _sessions and _sessions[0]["entries"] else ""
+            _last_date = _sessions[-1]["entries"][-1]["date"] if _sessions and _sessions[-1]["entries"] else ""
+            _days_total = 0
+            if _first_date and _last_date:
+                from datetime import datetime as _dt_wh
+                try:
+                    _days_total = (_dt_wh.strptime(_last_date, "%Y-%m-%d") - _dt_wh.strptime(_first_date, "%Y-%m-%d")).days
+                except ValueError:
+                    pass
+            _summary_bar = (
+                f"<div style='margin-top:14px;padding:10px 16px;background:#f1f5f9;border-radius:6px;"
+                f"display:flex;gap:24px;flex-wrap:wrap;'>"
+                f"<div style='font-size:12px;color:#6b7280;'>👥 <strong style='color:#1B3A6B;'>{len(_total_agents)}</strong> agents</div>"
+                f"<div style='font-size:12px;color:#6b7280;'>⚠️ <strong style='color:#991b1b;'>{_total_closes}</strong> premature closes</div>"
+                f"<div style='font-size:12px;color:#6b7280;'>📞 <strong style='color:#1B3A6B;'>{_total_breaches}</strong> callback promises</div>"
+                f"<div style='font-size:12px;color:#6b7280;'>⬆️ <strong style='color:#9a3412;'>{_total_escalations}</strong> escalations</div>"
+                f"<div style='font-size:12px;color:#6b7280;'>📅 <strong style='color:#1B3A6B;'>{_days_total}</strong> days total</div>"
+                f"</div>"
+            )
+            st.markdown(_summary_bar, unsafe_allow_html=True)
 
     # ── Insights (visible, yellow) ────────────────────────────────────────────
     st.markdown(
