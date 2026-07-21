@@ -12,8 +12,23 @@ import html
 import logging
 from datetime import date, datetime as dt
 from PIL import Image as PILImage
+from deep_translator import GoogleTranslator
 
 logger = logging.getLogger(__name__)
+
+_translator = GoogleTranslator(source='auto', target='en')
+
+def _auto_translate(text: str) -> str:
+    if not text or len(text.strip()) < 2:
+        return text
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    if non_ascii / max(len(text), 1) < 0.3:
+        return text
+    try:
+        translated = _translator.translate(text)
+        return translated if translated else text
+    except Exception:
+        return text
 try:
     import psycopg2
     import psycopg2.extras
@@ -382,7 +397,8 @@ def build_session_groups(ticket: dict) -> list[dict]:
             msg_text = (u.get("text") or u.get("html") or u.get("body") or "").strip()
         if msg_text and not msg_text.startswith(boilerplate):
             first_line = next((l.strip() for l in msg_text.splitlines() if l.strip()), "")
-            parts.append(first_line[:160] + ("…" if len(first_line) > 160 else ""))
+            truncated = first_line[:160] + ("…" if len(first_line) > 160 else "")
+            parts.append(_auto_translate(truncated))
 
         sc = u.get("status_change")
         if sc and sc.get("new_name"):
@@ -1737,15 +1753,6 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 {_det("🎓 Coaching Notes (" + str(len(ai.get('coaching_notes', []))) + ")",
   _build_coaching_notes_html(ai.get('coaching_notes', []), esc), "")}
 
-{_det("🚫 Premature Closes (" + str(len(ai.get('premature_closes', []))) + ")",
-  _build_premature_closes_html(ai.get('premature_closes', []), esc), "")}
-
-{_det("📞 Callback Tracker",
-  _build_callback_tracker_html(ai.get('callback_promise_log', []), esc), "")}
-
-{_det("🏠 Complex Environment Checklist",
-  _build_env_checklist_html(ai, esc), "")}
-
 {_det("🎯 Executive Interaction Dashboard", _dash_inner, "")}
 
 {_det("📋 What Happened?", actions_block, "")}
@@ -1756,6 +1763,15 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 {_det("🎯 Opportunities", "<ul>" + opps_html_r + "</ul>", "")}
 
 {_det("✅ Recommended Next Steps", "<ul>" + steps_html + "</ul>", "")}
+
+{_det("🚫 Premature Closes (" + str(len(ai.get('premature_closes', []))) + ")",
+  _build_premature_closes_html(ai.get('premature_closes', []), esc), "")}
+
+{_det("📞 Callback Tracker",
+  _build_callback_tracker_html(ai.get('callback_promise_log', []), esc), "")}
+
+{_det("🏠 Complex Environment Checklist",
+  _build_env_checklist_html(ai, esc), "")}
 
 {_det(_agents_title or "👥 Agents Involved", _agents_inner, "")}
 
@@ -2118,6 +2134,23 @@ if "ticket" in st.session_state:
         unsafe_allow_html=True,
     )
 
+    # ── Actions Taken (collapsed) ────────────────────────────────────────────
+    _actions_log = ai.get("actions_log", [])
+    if _actions_log:
+        with st.expander(f"📋 Actions Taken ({len(_actions_log)} entries)", expanded=False):
+            for _al in _actions_log:
+                if not isinstance(_al, dict):
+                    continue
+                _al_agent = html.escape(str(_al.get("agent", "")))
+                _al_date = html.escape(str(_al.get("date", "")))
+                _al_action = html.escape(str(_al.get("action", "")))
+                st.markdown(
+                    f"<p style='margin:2px 0;font-size:12px;line-height:1.7;color:#374151;'>"
+                    f"<span style='color:#6b7280;font-size:11px;'>[{_al_agent} · {_al_date}]</span> "
+                    f"{_al_action}</p>",
+                    unsafe_allow_html=True,
+                )
+
     # ── Coaching Priority Banner ─────────────────────────────────────────────
     _cp = ai.get("coaching_priority", "")
     if _cp:
@@ -2133,330 +2166,339 @@ if "ticket" in st.session_state:
             unsafe_allow_html=True,
         )
 
-    # ── Agent Scorecard ──────────────────────────────────────────────────────
-    _agents_ai = ai.get("agents_involved", [])
-    _has_scores = any(a.get("technical_score") is not None for a in _agents_ai)
-    if _has_scores and _agents_ai:
-        with st.expander("📊 Agent Scorecard", expanded=False):
-            _sc_rows = ""
-            for _a in _agents_ai:
-                _ts = _a.get("technical_score", "—")
-                _hs = _a.get("handling_score", "—")
-                _ts_color = "#ef4444" if isinstance(_ts, int) and _ts <= 2 else ("#f59e0b" if isinstance(_ts, int) and _ts == 3 else "#16a34a")
-                _hs_color = "#ef4444" if isinstance(_hs, int) and _hs <= 2 else ("#f59e0b" if isinstance(_hs, int) and _hs == 3 else "#16a34a")
-                _flags = _a.get("flags", [])
-                _flags_html = " ".join(f"<span style='background:#fef2f2;color:#991b1b;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;'>{html.escape(str(f))}</span>" for f in _flags) if _flags else ""
-                _sc_rows += (
-                    f"<tr>"
-                    f"<td style='font-weight:600;'>{html.escape(str(_a.get('name', '')))}</td>"
-                    f"<td>{html.escape(str(_a.get('role', '')))}</td>"
-                    f"<td style='text-align:center;color:{_ts_color};font-weight:700;'>{_ts}/5</td>"
-                    f"<td style='text-align:center;color:{_hs_color};font-weight:700;'>{_hs}/5</td>"
-                    f"<td>{_flags_html}</td>"
-                    f"<td style='font-size:11px;'>{html.escape(str(_a.get('summary', '')))}</td>"
-                    f"</tr>"
-                )
-            st.markdown(
-                f"""<table style='border-collapse:collapse;width:100%;font-family:Segoe UI,sans-serif;font-size:12px;'>
-                <thead><tr style='background:#1B3A6B;color:white;'>
-                    <th style='padding:8px 10px;text-align:left;'>Agent</th>
-                    <th style='padding:8px 10px;text-align:left;'>Role</th>
-                    <th style='padding:8px 10px;text-align:center;'>Tech</th>
-                    <th style='padding:8px 10px;text-align:center;'>Handling</th>
-                    <th style='padding:8px 10px;text-align:left;'>Flags</th>
-                    <th style='padding:8px 10px;text-align:left;'>Summary</th>
-                </tr></thead>
-                <tbody>{_sc_rows}</tbody></table>""",
-                unsafe_allow_html=True,
-            )
+    # ══════════════════════════════════════════════════════════════════════════
+    #  TWO-TAB LAYOUT: Summary | Deep Dive
+    # ══════════════════════════════════════════════════════════════════════════
+    _tab_summary, _tab_deep = st.tabs(["📄 Summary", "🔍 Deep Dive"])
 
-    # ── Resolution & Efficiency badges ───────────────────────────────────────
-    _res_q = ai.get("resolution_quality", "")
-    _eff_r = ai.get("efficiency_rating", "")
-    _root_c = ai.get("root_cause", "")
-    if _res_q or _eff_r or _root_c:
-        _badge_cols = st.columns(3)
-        with _badge_cols[0]:
-            if _res_q:
-                _rq_colors = {"Verified Fix": "#16a34a", "Assumed Fix": "#f59e0b", "Workaround": "#f59e0b", "Unresolved": "#ef4444", "Premature Close": "#ef4444"}
-                _rq_c = _rq_colors.get(_res_q.split(" —")[0].strip() if " —" in _res_q else _res_q.strip(), "#6b7280")
-                st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Resolution Quality</p><p style='margin:0;font-size:14px;font-weight:700;color:{_rq_c};'>{html.escape(_res_q)}</p></div>", unsafe_allow_html=True)
-        with _badge_cols[1]:
-            if _eff_r:
-                _ef_c = "#16a34a" if _eff_r.startswith("Efficient") else ("#f59e0b" if _eff_r.startswith("Acceptable") else "#ef4444")
-                st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Efficiency</p><p style='margin:0;font-size:14px;font-weight:700;color:{_ef_c};'>{html.escape(_eff_r)}</p></div>", unsafe_allow_html=True)
-        with _badge_cols[2]:
-            if _root_c:
-                st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Root Cause</p><p style='margin:0;font-size:14px;font-weight:700;color:#1B3A6B;'>{html.escape(_root_c)}</p></div>", unsafe_allow_html=True)
+    with _tab_summary:
 
-    # ── Technical QA Findings ────────────────────────────────────────────────
-    _tech_f = ai.get("technical_findings", [])
-    if _tech_f:
-        with st.expander(f"🔧 Technical QA Findings ({len(_tech_f)})", expanded=False):
-            for _tf in _tech_f:
-                st.markdown(f"<p style='margin:4px 0;font-size:13px;color:#991b1b;'>• {html.escape(str(_tf))}</p>", unsafe_allow_html=True)
+        # ── Executive Interaction Dashboard ──────────────────────────────────
+        _figs = build_interaction_figures(timeline)
+        if _figs:
+            try:
+                _fig_sk, _fig_pie, _fig_sw = _figs
+                with st.expander("🎯 Executive Interaction Dashboard", expanded=False):
+                    col_sk, col_pie = st.columns([3, 2])
+                    with col_sk:
+                        st.plotly_chart(_fig_sk, use_container_width=True)
+                    with col_pie:
+                        st.plotly_chart(_fig_pie, use_container_width=True)
+                    st.plotly_chart(_fig_sw, use_container_width=True)
+            except Exception as _exc:
+                st.error(f"Dashboard error: {_exc}")
 
-    # ── Soft Skill Findings ──────────────────────────────────────────────────
-    _soft_f = ai.get("soft_skill_findings", [])
-    if _soft_f:
-        with st.expander(f"💬 Soft Skill Findings ({len(_soft_f)})", expanded=False):
-            for _sf in _soft_f:
-                st.markdown(f"<p style='margin:4px 0;font-size:13px;color:#92400e;'>• {html.escape(str(_sf))}</p>", unsafe_allow_html=True)
+        # ── Insights (visible, yellow) ───────────────────────────────────────
+        st.markdown(
+            f"""<div style="background:#fffbea;border-left:4px solid #f59e0b;
+                            border-radius:0 6px 6px 0;padding:12px 16px;margin:8px 0 10px;">
+                <p style="margin:0;font-size:13px;">
+                    <span style="font-weight:700;color:#92400e;">💡 Insights:</span>&nbsp;
+                    {html.escape(v(ai.get('actions_insights')))}
+                </p>
+            </div>""",
+            unsafe_allow_html=True,
+        )
 
-    # ── Coaching Notes ───────────────────────────────────────────────────────
-    _coach = ai.get("coaching_notes", [])
-    if _coach:
-        with st.expander(f"🎓 Coaching Notes ({len(_coach)})", expanded=False):
-            for _cn in _coach:
-                if not isinstance(_cn, dict):
-                    continue
+        # ── Opportunities ────────────────────────────────────────────────────
+        opps = ai.get("opportunities", [])
+        with st.expander(f"🎯 Opportunities ({len(opps)})", expanded=False):
+            if opps:
+                for o in opps:
+                    st.markdown(
+                        f"<p style='margin:4px 0;font-size:13px;color:#7f1d1d;'>• {html.escape(str(o))}</p>",
+                        unsafe_allow_html=True,
+                    )
+            else:
                 st.markdown(
-                    f"""<div style='background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 6px 6px 0;padding:10px 14px;margin:6px 0;'>
-                        <p style='margin:0 0 4px;font-size:12px;font-weight:700;color:#1B3A6B;'>{html.escape(str(_cn.get('agent', '')))}:</p>
-                        <p style='margin:0 0 4px;font-size:12px;color:#991b1b;'><strong>Finding:</strong> {html.escape(str(_cn.get('finding', '')))}</p>
-                        <p style='margin:0 0 4px;font-size:12px;color:#166534;'><strong>Correct Handling:</strong> {html.escape(str(_cn.get('correct_script', '')))}</p>
-                        <p style='margin:0;font-size:11px;color:#6b7280;'><em>Policy: {html.escape(str(_cn.get('policy_ref', '')))}</em></p>
-                    </div>""",
+                    "<p style='margin:0;font-size:13px;color:#6b7280;'>No issues identified.</p>",
                     unsafe_allow_html=True,
                 )
 
-    # ── Premature Close Detection ────────────────────────────────────────────
-    _pc_list = ai.get("premature_closes", [])
-    if _pc_list:
-        with st.expander(f"🚫 Premature Closes ({len(_pc_list)})", expanded=False):
-            for _pc in _pc_list:
-                if not isinstance(_pc, dict):
-                    continue
-                _pc_pattern = _pc.get("pattern", "")
-                _pc_bg = "#fef2f2" if "Observe" in _pc_pattern else "#fff7ed"
-                _pc_border = "#ef4444" if "Observe" in _pc_pattern else "#f97316"
+        # ── Recommended Next Steps ───────────────────────────────────────────
+        with st.expander("✅ Recommended Next Steps", expanded=False):
+            for s in ai.get("next_steps", []):
+                st.markdown(f"- {s}")
+
+    with _tab_deep:
+
+        # ── Resolution & Efficiency badges ───────────────────────────────────
+        _res_q = ai.get("resolution_quality", "")
+        _eff_r = ai.get("efficiency_rating", "")
+        _root_c = ai.get("root_cause", "")
+        if _res_q or _eff_r or _root_c:
+            _badge_cols = st.columns(3)
+            with _badge_cols[0]:
+                if _res_q:
+                    _rq_colors = {"Verified Fix": "#16a34a", "Assumed Fix": "#f59e0b", "Workaround": "#f59e0b", "Unresolved": "#ef4444", "Premature Close": "#ef4444"}
+                    _rq_c = _rq_colors.get(_res_q.split(" —")[0].strip() if " —" in _res_q else _res_q.strip(), "#6b7280")
+                    st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Resolution Quality</p><p style='margin:0;font-size:14px;font-weight:700;color:{_rq_c};'>{html.escape(_res_q)}</p></div>", unsafe_allow_html=True)
+            with _badge_cols[1]:
+                if _eff_r:
+                    _ef_c = "#16a34a" if _eff_r.startswith("Efficient") else ("#f59e0b" if _eff_r.startswith("Acceptable") else "#ef4444")
+                    st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Efficiency</p><p style='margin:0;font-size:14px;font-weight:700;color:{_ef_c};'>{html.escape(_eff_r)}</p></div>", unsafe_allow_html=True)
+            with _badge_cols[2]:
+                if _root_c:
+                    st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Root Cause</p><p style='margin:0;font-size:14px;font-weight:700;color:#1B3A6B;'>{html.escape(_root_c)}</p></div>", unsafe_allow_html=True)
+
+        # ── Agent Scorecard ──────────────────────────────────────────────────
+        _agents_ai = ai.get("agents_involved", [])
+        _has_scores = any(a.get("technical_score") is not None for a in _agents_ai)
+        if _has_scores and _agents_ai:
+            with st.expander("📊 Agent Scorecard", expanded=False):
+                _sc_rows = ""
+                for _a in _agents_ai:
+                    _ts = _a.get("technical_score", "—")
+                    _hs = _a.get("handling_score", "—")
+                    _ts_color = "#ef4444" if isinstance(_ts, int) and _ts <= 2 else ("#f59e0b" if isinstance(_ts, int) and _ts == 3 else "#16a34a")
+                    _hs_color = "#ef4444" if isinstance(_hs, int) and _hs <= 2 else ("#f59e0b" if isinstance(_hs, int) and _hs == 3 else "#16a34a")
+                    _flags = _a.get("flags", [])
+                    _flags_html = " ".join(f"<span style='background:#fef2f2;color:#991b1b;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;'>{html.escape(str(f))}</span>" for f in _flags) if _flags else ""
+                    _sc_rows += (
+                        f"<tr>"
+                        f"<td style='font-weight:600;'>{html.escape(str(_a.get('name', '')))}</td>"
+                        f"<td>{html.escape(str(_a.get('role', '')))}</td>"
+                        f"<td style='text-align:center;color:{_ts_color};font-weight:700;'>{_ts}/5</td>"
+                        f"<td style='text-align:center;color:{_hs_color};font-weight:700;'>{_hs}/5</td>"
+                        f"<td>{_flags_html}</td>"
+                        f"<td style='font-size:11px;'>{html.escape(str(_a.get('summary', '')))}</td>"
+                        f"</tr>"
+                    )
                 st.markdown(
-                    f"""<div style='background:{_pc_bg};border-left:4px solid {_pc_border};border-radius:0 6px 6px 0;padding:10px 14px;margin:6px 0;'>
-                        <p style='margin:0 0 3px;font-size:12px;font-weight:700;color:#991b1b;'>
-                            {html.escape(str(_pc.get('agent', '')))} — {html.escape(str(_pc.get('date', '')))}
-                        </p>
-                        <p style='margin:0 0 3px;font-size:12px;color:#7f1d1d;'>{html.escape(str(_pc.get('what_happened', '')))}</p>
-                        <p style='margin:0;font-size:11px;color:#9a3412;font-style:italic;'>Pattern: {html.escape(_pc_pattern)}</p>
-                    </div>""",
+                    f"""<table style='border-collapse:collapse;width:100%;font-family:Segoe UI,sans-serif;font-size:12px;'>
+                    <thead><tr style='background:#1B3A6B;color:white;'>
+                        <th style='padding:8px 10px;text-align:left;'>Agent</th>
+                        <th style='padding:8px 10px;text-align:left;'>Role</th>
+                        <th style='padding:8px 10px;text-align:center;'>Tech</th>
+                        <th style='padding:8px 10px;text-align:center;'>Handling</th>
+                        <th style='padding:8px 10px;text-align:left;'>Flags</th>
+                        <th style='padding:8px 10px;text-align:left;'>Summary</th>
+                    </tr></thead>
+                    <tbody>{_sc_rows}</tbody></table>""",
                     unsafe_allow_html=True,
                 )
 
-    # ── Callback Breach Tracker ──────────────────────────────────────────────
-    _cb_log = ai.get("callback_promise_log", [])
-    if _cb_log:
-        _breached = [c for c in _cb_log if isinstance(c, dict) and c.get("status") == "Breached"]
-        _honored = [c for c in _cb_log if isinstance(c, dict) and c.get("status") == "Honored"]
-        _cb_label = f"📞 Callback Tracker ({len(_breached)} breached / {len(_honored)} honored)"
-        with st.expander(_cb_label, expanded=False):
-            _cb_rows = ""
-            for _cb in _cb_log:
-                if not isinstance(_cb, dict):
-                    continue
-                _is_breach = _cb.get("status") == "Breached"
-                _row_bg = "#fef2f2" if _is_breach else "#f0fdf4"
-                _status_color = "#ef4444" if _is_breach else "#16a34a"
-                _status_icon = "❌" if _is_breach else "✅"
-                _cb_rows += (
-                    f"<tr style='background:{_row_bg};'>"
-                    f"<td style='font-weight:600;'>{html.escape(str(_cb.get('agent', '')))}</td>"
-                    f"<td style='font-size:11px;'>{html.escape(str(_cb.get('promise', '')))}</td>"
-                    f"<td style='text-align:center;'>{html.escape(str(_cb.get('promised_timeframe', '')))}</td>"
-                    f"<td style='font-size:11px;'>{html.escape(str(_cb.get('actual_followup', '')))}</td>"
-                    f"<td style='text-align:center;color:{_status_color};font-weight:700;'>{_status_icon} {html.escape(str(_cb.get('status', '')))}</td>"
-                    f"</tr>"
-                )
-            st.markdown(
-                f"""<table style='border-collapse:collapse;width:100%;font-family:Segoe UI,sans-serif;font-size:12px;'>
-                <thead><tr style='background:#1B3A6B;color:white;'>
-                    <th style='padding:8px 10px;text-align:left;'>Agent</th>
-                    <th style='padding:8px 10px;text-align:left;'>Promise</th>
-                    <th style='padding:8px 10px;text-align:center;'>Timeframe</th>
-                    <th style='padding:8px 10px;text-align:left;'>Actual Follow-up</th>
-                    <th style='padding:8px 10px;text-align:center;'>Status</th>
-                </tr></thead>
-                <tbody>{_cb_rows}</tbody></table>""",
-                unsafe_allow_html=True,
-            )
+        # ── Technical QA Findings ────────────────────────────────────────────
+        _tech_f = ai.get("technical_findings", [])
+        if _tech_f:
+            with st.expander(f"🔧 Technical QA Findings ({len(_tech_f)})", expanded=False):
+                for _tf in _tech_f:
+                    st.markdown(f"<p style='margin:4px 0;font-size:13px;color:#991b1b;'>• {html.escape(str(_tf))}</p>", unsafe_allow_html=True)
 
-    # ── Complex Environment Checklist ────────────────────────────────────────
-    _is_complex = ai.get("complex_environment", False)
-    _env_check = ai.get("environment_checklist", {})
-    if _is_complex and _env_check:
-        with st.expander("🏠 Complex Environment Checklist", expanded=False):
-            _check_items = [
-                ("Node Inventory", "node_inventory", "node_inventory_detail"),
-                ("RSSI / Signal Check", "rssi_signal_check", "rssi_detail"),
-                ("Wired Bypass Test", "wired_bypass_test", "wired_bypass_detail"),
-                ("Topology Reconciliation", "topology_reconciliation", "topology_detail"),
-                ("Firmware Consistency", "firmware_consistency", "firmware_detail"),
-            ]
-            for _label, _key, _detail_key in _check_items:
-                _status = _env_check.get(_key, "Not Applicable")
-                _detail = _env_check.get(_detail_key, "")
-                if _status == "Done":
-                    _icon, _bg, _border = "✅", "#f0fdf4", "#16a34a"
-                elif _status == "Skipped":
-                    _icon, _bg, _border = "❌", "#fef2f2", "#ef4444"
-                else:
-                    _icon, _bg, _border = "⬜", "#f8fafc", "#d1d5db"
+        # ── Soft Skill Findings ──────────────────────────────────────────────
+        _soft_f = ai.get("soft_skill_findings", [])
+        if _soft_f:
+            with st.expander(f"💬 Soft Skill Findings ({len(_soft_f)})", expanded=False):
+                for _sf in _soft_f:
+                    st.markdown(f"<p style='margin:4px 0;font-size:13px;color:#92400e;'>• {html.escape(str(_sf))}</p>", unsafe_allow_html=True)
+
+        # ── Coaching Notes ───────────────────────────────────────────────────
+        _coach = ai.get("coaching_notes", [])
+        if _coach:
+            with st.expander(f"🎓 Coaching Notes ({len(_coach)})", expanded=False):
+                for _cn in _coach:
+                    if not isinstance(_cn, dict):
+                        continue
+                    st.markdown(
+                        f"""<div style='background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 6px 6px 0;padding:10px 14px;margin:6px 0;'>
+                            <p style='margin:0 0 4px;font-size:12px;font-weight:700;color:#1B3A6B;'>{html.escape(str(_cn.get('agent', '')))}:</p>
+                            <p style='margin:0 0 4px;font-size:12px;color:#991b1b;'><strong>Finding:</strong> {html.escape(str(_cn.get('finding', '')))}</p>
+                            <p style='margin:0 0 4px;font-size:12px;color:#166534;'><strong>Correct Handling:</strong> {html.escape(str(_cn.get('correct_script', '')))}</p>
+                            <p style='margin:0;font-size:11px;color:#6b7280;'><em>Policy: {html.escape(str(_cn.get('policy_ref', '')))}</em></p>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+        # ── Premature Close Detection ────────────────────────────────────────
+        _pc_list = ai.get("premature_closes", [])
+        if _pc_list:
+            with st.expander(f"🚫 Premature Closes ({len(_pc_list)})", expanded=False):
+                for _pc in _pc_list:
+                    if not isinstance(_pc, dict):
+                        continue
+                    _pc_pattern = _pc.get("pattern", "")
+                    _pc_bg = "#fef2f2" if "Observe" in _pc_pattern else "#fff7ed"
+                    _pc_border = "#ef4444" if "Observe" in _pc_pattern else "#f97316"
+                    st.markdown(
+                        f"""<div style='background:{_pc_bg};border-left:4px solid {_pc_border};border-radius:0 6px 6px 0;padding:10px 14px;margin:6px 0;'>
+                            <p style='margin:0 0 3px;font-size:12px;font-weight:700;color:#991b1b;'>
+                                {html.escape(str(_pc.get('agent', '')))} — {html.escape(str(_pc.get('date', '')))}
+                            </p>
+                            <p style='margin:0 0 3px;font-size:12px;color:#7f1d1d;'>{html.escape(str(_pc.get('what_happened', '')))}</p>
+                            <p style='margin:0;font-size:11px;color:#9a3412;font-style:italic;'>Pattern: {html.escape(_pc_pattern)}</p>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+        # ── Callback Breach Tracker ──────────────────────────────────────────
+        _cb_log = ai.get("callback_promise_log", [])
+        if _cb_log:
+            _breached = [c for c in _cb_log if isinstance(c, dict) and c.get("status") == "Breached"]
+            _honored = [c for c in _cb_log if isinstance(c, dict) and c.get("status") == "Honored"]
+            _cb_label = f"📞 Callback Tracker ({len(_breached)} breached / {len(_honored)} honored)"
+            with st.expander(_cb_label, expanded=False):
+                _cb_rows = ""
+                for _cb in _cb_log:
+                    if not isinstance(_cb, dict):
+                        continue
+                    _is_breach = _cb.get("status") == "Breached"
+                    _row_bg = "#fef2f2" if _is_breach else "#f0fdf4"
+                    _status_color = "#ef4444" if _is_breach else "#16a34a"
+                    _status_icon = "❌" if _is_breach else "✅"
+                    _cb_rows += (
+                        f"<tr style='background:{_row_bg};'>"
+                        f"<td style='font-weight:600;'>{html.escape(str(_cb.get('agent', '')))}</td>"
+                        f"<td style='font-size:11px;'>{html.escape(str(_cb.get('promise', '')))}</td>"
+                        f"<td style='text-align:center;'>{html.escape(str(_cb.get('promised_timeframe', '')))}</td>"
+                        f"<td style='font-size:11px;'>{html.escape(str(_cb.get('actual_followup', '')))}</td>"
+                        f"<td style='text-align:center;color:{_status_color};font-weight:700;'>{_status_icon} {html.escape(str(_cb.get('status', '')))}</td>"
+                        f"</tr>"
+                    )
                 st.markdown(
-                    f"""<div style='background:{_bg};border-left:4px solid {_border};border-radius:0 6px 6px 0;padding:8px 14px;margin:4px 0;'>
-                        <p style='margin:0;font-size:13px;'>
-                            {_icon} <strong>{html.escape(_label)}:</strong>
-                            <span style='color:#6b7280;font-size:11px;margin-left:6px;'>{html.escape(_status)}</span>
-                        </p>
-                        <p style='margin:2px 0 0;font-size:11px;color:#4b5563;'>{html.escape(_detail)}</p>
-                    </div>""",
+                    f"""<table style='border-collapse:collapse;width:100%;font-family:Segoe UI,sans-serif;font-size:12px;'>
+                    <thead><tr style='background:#1B3A6B;color:white;'>
+                        <th style='padding:8px 10px;text-align:left;'>Agent</th>
+                        <th style='padding:8px 10px;text-align:left;'>Promise</th>
+                        <th style='padding:8px 10px;text-align:center;'>Timeframe</th>
+                        <th style='padding:8px 10px;text-align:left;'>Actual Follow-up</th>
+                        <th style='padding:8px 10px;text-align:center;'>Status</th>
+                    </tr></thead>
+                    <tbody>{_cb_rows}</tbody></table>""",
                     unsafe_allow_html=True,
                 )
 
-    # ── Executive Interaction Dashboard ──────────────────────────────────────
-    _figs = build_interaction_figures(timeline)
-    if _figs:
-        try:
-            _fig_sk, _fig_pie, _fig_sw = _figs
-            with st.expander("🎯 Executive Interaction Dashboard", expanded=False):
-                col_sk, col_pie = st.columns([3, 2])
-                with col_sk:
-                    st.plotly_chart(_fig_sk, use_container_width=True)
-                with col_pie:
-                    st.plotly_chart(_fig_pie, use_container_width=True)
-                st.plotly_chart(_fig_sw, use_container_width=True)
-        except Exception as _exc:
-            st.error(f"Dashboard error: {_exc}")
+        # ── Complex Environment Checklist ────────────────────────────────────
+        _is_complex = ai.get("complex_environment", False)
+        _env_check = ai.get("environment_checklist", {})
+        if _is_complex and _env_check:
+            with st.expander("🏠 Complex Environment Checklist", expanded=False):
+                _check_items = [
+                    ("Node Inventory", "node_inventory", "node_inventory_detail"),
+                    ("RSSI / Signal Check", "rssi_signal_check", "rssi_detail"),
+                    ("Wired Bypass Test", "wired_bypass_test", "wired_bypass_detail"),
+                    ("Topology Reconciliation", "topology_reconciliation", "topology_detail"),
+                    ("Firmware Consistency", "firmware_consistency", "firmware_detail"),
+                ]
+                for _label, _key, _detail_key in _check_items:
+                    _status = _env_check.get(_key, "Not Applicable")
+                    _detail = _env_check.get(_detail_key, "")
+                    if _status == "Done":
+                        _icon, _bg, _border = "✅", "#f0fdf4", "#16a34a"
+                    elif _status == "Skipped":
+                        _icon, _bg, _border = "❌", "#fef2f2", "#ef4444"
+                    else:
+                        _icon, _bg, _border = "⬜", "#f8fafc", "#d1d5db"
+                    st.markdown(
+                        f"""<div style='background:{_bg};border-left:4px solid {_border};border-radius:0 6px 6px 0;padding:8px 14px;margin:4px 0;'>
+                            <p style='margin:0;font-size:13px;'>
+                                {_icon} <strong>{html.escape(_label)}:</strong>
+                                <span style='color:#6b7280;font-size:11px;margin-left:6px;'>{html.escape(_status)}</span>
+                            </p>
+                            <p style='margin:2px 0 0;font-size:11px;color:#4b5563;'>{html.escape(_detail)}</p>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
 
-    # ── What Happened? (session-grouped, color-coded) ──────────────────────────
-    _sessions = build_session_groups(ticket)
-    with st.expander(f"📋 What Happened? ({len(_sessions)} sessions)", expanded=False):
-        if not _sessions:
-            st.markdown("_No update data available._")
-        else:
-            _flag_colors = {
-                "close": ("#fef2f2", "#991b1b", "⚠️"),
-                "reopen": ("#fffbea", "#854f0b", "🔄"),
-                "escalation": ("#fff7ed", "#9a3412", "⬆️"),
-                "frustration": ("#fffbea", "#854f0b", "😤"),
-                "callback_promise": ("#eef3fb", "#1B3A6B", "📞"),
-            }
-            _dot_colors = {"agent": "#378ADD", "customer": "#1D9E75", "system": "#B4B2A9"}
-            _name_colors = {"agent": "#185FA5", "customer": "#0F6E56", "system": "#9ca3af"}
-            _legend = (
-                "<div style='display:flex;gap:16px;margin-bottom:12px;padding:8px 12px;"
-                "background:#f8fafc;border-radius:6px;flex-wrap:wrap;'>"
-                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
-                "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#378ADD;'></span> Agent</div>"
-                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
-                "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#1D9E75;'></span> Customer</div>"
-                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
-                "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#B4B2A9;'></span> System</div>"
-                "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
-                "<span style='background:#fef2f2;color:#991b1b;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;'>⚠️ Flag</span> Critical event</div>"
-                "</div>"
-            )
-            st.markdown(_legend, unsafe_allow_html=True)
-
-            _total_agents = set()
-            _total_closes = 0
-            _total_breaches = 0
-            _total_escalations = 0
-
-            for _sess in _sessions:
-                _sess_header = (
-                    f"<div style='display:flex;align-items:center;gap:8px;margin:16px 0 6px;padding-bottom:5px;"
-                    f"border-bottom:1px solid #e5e7eb;'>"
-                    f"<span style='background:#f1f5f9;color:#6b7280;font-size:11px;font-weight:600;padding:2px 8px;"
-                    f"border-radius:4px;'>Session {_sess['num']}</span>"
-                    f"<span style='font-weight:600;font-size:13px;color:#1B3A6B;'>{html.escape(_sess['title'])}</span>"
-                    f"<span style='font-size:11px;color:#9ca3af;margin-left:auto;'>{html.escape(_sess['date_range'])}</span>"
-                    f"</div>"
+        # ── Detailed Case Summary (session-grouped, color-coded) ─────────────
+        _sessions = build_session_groups(ticket)
+        with st.expander(f"📋 Detailed Case Summary ({len(_sessions)} sessions)", expanded=False):
+            if not _sessions:
+                st.markdown("_No update data available._")
+            else:
+                _flag_colors = {
+                    "close": ("#fef2f2", "#991b1b", "⚠️"),
+                    "reopen": ("#fffbea", "#854f0b", "🔄"),
+                    "escalation": ("#fff7ed", "#9a3412", "⬆️"),
+                    "frustration": ("#fffbea", "#854f0b", "😤"),
+                    "callback_promise": ("#eef3fb", "#1B3A6B", "📞"),
+                }
+                _dot_colors = {"agent": "#378ADD", "customer": "#1D9E75", "system": "#B4B2A9"}
+                _name_colors = {"agent": "#185FA5", "customer": "#0F6E56", "system": "#9ca3af"}
+                _legend = (
+                    "<div style='display:flex;gap:16px;margin-bottom:12px;padding:8px 12px;"
+                    "background:#f8fafc;border-radius:6px;flex-wrap:wrap;'>"
+                    "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                    "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#378ADD;'></span> Agent</div>"
+                    "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                    "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#1D9E75;'></span> Customer</div>"
+                    "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                    "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:#B4B2A9;'></span> System</div>"
+                    "<div style='display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;'>"
+                    "<span style='background:#fef2f2;color:#991b1b;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;'>⚠️ Flag</span> Critical event</div>"
+                    "</div>"
                 )
-                st.markdown(_sess_header, unsafe_allow_html=True)
+                st.markdown(_legend, unsafe_allow_html=True)
 
-                for _e in _sess["entries"]:
-                    if _e["actor"] == "agent":
-                        _total_agents.add(_e["name"])
-                    _dot_c = _dot_colors.get(_e["actor"], "#B4B2A9")
-                    _nm_c = _name_colors.get(_e["actor"], "#6b7280")
-                    _nm_style = "font-style:italic;" if _e["actor"] == "system" else ""
-                    _flags_html = ""
-                    for _ft, _fl in _e.get("flags", []):
-                        _fb, _fc, _fi = _flag_colors.get(_ft, ("#f8fafc", "#6b7280", ""))
-                        _flags_html += (
-                            f" <span style='display:inline-flex;align-items:center;gap:2px;background:{_fb};"
-                            f"color:{_fc};font-size:10px;font-weight:700;padding:1px 6px;"
-                            f"border-radius:3px;margin-left:4px;'>{_fi} {html.escape(_fl)}</span>"
-                        )
-                        if _ft == "close":
-                            _total_closes += 1
-                        elif _ft == "escalation":
-                            _total_escalations += 1
-                        elif _ft == "callback_promise":
-                            _total_breaches += 1
-                    _entry_html = (
-                        f"<div style='display:flex;gap:10px;padding:5px 0;border-bottom:1px solid #f1f5f9;"
-                        f"align-items:flex-start;'>"
-                        f"<span style='display:inline-block;width:8px;height:8px;border-radius:50%;"
-                        f"background:{_dot_c};margin-top:5px;flex-shrink:0;'></span>"
-                        f"<span style='font-weight:600;min-width:130px;flex-shrink:0;font-size:12px;"
-                        f"color:{_nm_c};{_nm_style}'>{html.escape(_e['name'])}</span>"
-                        f"<span style='flex:1;font-size:12px;line-height:1.5;color:#374151;'>"
-                        f"{html.escape(_e['action'])}{_flags_html}</span>"
+                _total_agents = set()
+                _total_closes = 0
+                _total_breaches = 0
+                _total_escalations = 0
+
+                for _sess in _sessions:
+                    _sess_header = (
+                        f"<div style='display:flex;align-items:center;gap:8px;margin:16px 0 6px;padding-bottom:5px;"
+                        f"border-bottom:1px solid #e5e7eb;'>"
+                        f"<span style='background:#f1f5f9;color:#6b7280;font-size:11px;font-weight:600;padding:2px 8px;"
+                        f"border-radius:4px;'>Session {_sess['num']}</span>"
+                        f"<span style='font-weight:600;font-size:13px;color:#1B3A6B;'>{html.escape(_sess['title'])}</span>"
+                        f"<span style='font-size:11px;color:#9ca3af;margin-left:auto;'>{html.escape(_sess['date_range'])}</span>"
                         f"</div>"
                     )
-                    st.markdown(_entry_html, unsafe_allow_html=True)
+                    st.markdown(_sess_header, unsafe_allow_html=True)
 
-            _first_date = _sessions[0]["entries"][0]["date"] if _sessions and _sessions[0]["entries"] else ""
-            _last_date = _sessions[-1]["entries"][-1]["date"] if _sessions and _sessions[-1]["entries"] else ""
-            _days_total = 0
-            if _first_date and _last_date:
-                from datetime import datetime as _dt_wh
-                try:
-                    _days_total = (_dt_wh.strptime(_last_date, "%Y-%m-%d") - _dt_wh.strptime(_first_date, "%Y-%m-%d")).days
-                except ValueError:
-                    pass
-            _summary_bar = (
-                f"<div style='margin-top:14px;padding:10px 16px;background:#f1f5f9;border-radius:6px;"
-                f"display:flex;gap:24px;flex-wrap:wrap;'>"
-                f"<div style='font-size:12px;color:#6b7280;'>👥 <strong style='color:#1B3A6B;'>{len(_total_agents)}</strong> agents</div>"
-                f"<div style='font-size:12px;color:#6b7280;'>⚠️ <strong style='color:#991b1b;'>{_total_closes}</strong> premature closes</div>"
-                f"<div style='font-size:12px;color:#6b7280;'>📞 <strong style='color:#1B3A6B;'>{_total_breaches}</strong> callback promises</div>"
-                f"<div style='font-size:12px;color:#6b7280;'>⬆️ <strong style='color:#9a3412;'>{_total_escalations}</strong> escalations</div>"
-                f"<div style='font-size:12px;color:#6b7280;'>📅 <strong style='color:#1B3A6B;'>{_days_total}</strong> days total</div>"
-                f"</div>"
-            )
-            st.markdown(_summary_bar, unsafe_allow_html=True)
+                    for _e in _sess["entries"]:
+                        if _e["actor"] == "agent":
+                            _total_agents.add(_e["name"])
+                        _dot_c = _dot_colors.get(_e["actor"], "#B4B2A9")
+                        _nm_c = _name_colors.get(_e["actor"], "#6b7280")
+                        _nm_style = "font-style:italic;" if _e["actor"] == "system" else ""
+                        _flags_html = ""
+                        for _ft, _fl in _e.get("flags", []):
+                            _fb, _fc, _fi = _flag_colors.get(_ft, ("#f8fafc", "#6b7280", ""))
+                            _flags_html += (
+                                f" <span style='display:inline-flex;align-items:center;gap:2px;background:{_fb};"
+                                f"color:{_fc};font-size:10px;font-weight:700;padding:1px 6px;"
+                                f"border-radius:3px;margin-left:4px;'>{_fi} {html.escape(_fl)}</span>"
+                            )
+                            if _ft == "close":
+                                _total_closes += 1
+                            elif _ft == "escalation":
+                                _total_escalations += 1
+                            elif _ft == "callback_promise":
+                                _total_breaches += 1
+                        _entry_html = (
+                            f"<div style='display:flex;gap:10px;padding:5px 0;border-bottom:1px solid #f1f5f9;"
+                            f"align-items:flex-start;'>"
+                            f"<span style='display:inline-block;width:8px;height:8px;border-radius:50%;"
+                            f"background:{_dot_c};margin-top:5px;flex-shrink:0;'></span>"
+                            f"<span style='font-weight:600;min-width:130px;flex-shrink:0;font-size:12px;"
+                            f"color:{_nm_c};{_nm_style}'>{html.escape(_e['name'])}</span>"
+                            f"<span style='flex:1;font-size:12px;line-height:1.5;color:#374151;'>"
+                            f"{html.escape(_e['action'])}{_flags_html}</span>"
+                            f"</div>"
+                        )
+                        st.markdown(_entry_html, unsafe_allow_html=True)
 
-    # ── Insights (visible, yellow) ────────────────────────────────────────────
-    st.markdown(
-        f"""<div style="background:#fffbea;border-left:4px solid #f59e0b;
-                        border-radius:0 6px 6px 0;padding:12px 16px;margin:8px 0 10px;">
-            <p style="margin:0;font-size:13px;">
-                <span style="font-weight:700;color:#92400e;">💡 Insights:</span>&nbsp;
-                {html.escape(v(ai.get('actions_insights')))}
-            </p>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-    # ── Opportunities ─────────────────────────────────────────────────────────
-    opps = ai.get("opportunities", [])
-    with st.expander(f"🎯 Opportunities ({len(opps)})", expanded=False):
-        if opps:
-            for o in opps:
-                st.markdown(
-                    f"<p style='margin:4px 0;font-size:13px;color:#7f1d1d;'>• {html.escape(str(o))}</p>",
-                    unsafe_allow_html=True,
+                _first_date = _sessions[0]["entries"][0]["date"] if _sessions and _sessions[0]["entries"] else ""
+                _last_date = _sessions[-1]["entries"][-1]["date"] if _sessions and _sessions[-1]["entries"] else ""
+                _days_total = 0
+                if _first_date and _last_date:
+                    from datetime import datetime as _dt_wh
+                    try:
+                        _days_total = (_dt_wh.strptime(_last_date, "%Y-%m-%d") - _dt_wh.strptime(_first_date, "%Y-%m-%d")).days
+                    except ValueError:
+                        pass
+                _summary_bar = (
+                    f"<div style='margin-top:14px;padding:10px 16px;background:#f1f5f9;border-radius:6px;"
+                    f"display:flex;gap:24px;flex-wrap:wrap;'>"
+                    f"<div style='font-size:12px;color:#6b7280;'>👥 <strong style='color:#1B3A6B;'>{len(_total_agents)}</strong> agents</div>"
+                    f"<div style='font-size:12px;color:#6b7280;'>⚠️ <strong style='color:#991b1b;'>{_total_closes}</strong> premature closes</div>"
+                    f"<div style='font-size:12px;color:#6b7280;'>📞 <strong style='color:#1B3A6B;'>{_total_breaches}</strong> callback promises</div>"
+                    f"<div style='font-size:12px;color:#6b7280;'>⬆️ <strong style='color:#9a3412;'>{_total_escalations}</strong> escalations</div>"
+                    f"<div style='font-size:12px;color:#6b7280;'>📅 <strong style='color:#1B3A6B;'>{_days_total}</strong> days total</div>"
+                    f"</div>"
                 )
-        else:
-            st.markdown(
-                "<p style='margin:0;font-size:13px;color:#6b7280;'>No issues identified.</p>",
-                unsafe_allow_html=True,
-            )
-
-    # ── Recommended Next Steps ────────────────────────────────────────────────
-    with st.expander("✅ Recommended Next Steps", expanded=False):
-        for s in ai.get("next_steps", []):
-            st.markdown(f"- {s}")
+                st.markdown(_summary_bar, unsafe_allow_html=True)
 
     # ── Timeline ──────────────────────────────────────────────────────────────
     with st.expander(f"📅 Timeline ({len(timeline)} entries)"):
