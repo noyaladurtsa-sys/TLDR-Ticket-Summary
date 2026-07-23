@@ -314,6 +314,103 @@ def _clean_agent_name(raw: str) -> str:
     return raw
 
 
+def _classify_action_actor(agent: str) -> str:
+    """Map an actions_log agent name to actor type: customer / system / agent."""
+    a = (agent or "").strip().lower()
+    if not a:
+        return "system"
+    if a in ("customer", "client", "user", "end user"):
+        return "customer"
+    if a in ("system", "auto", "smart rule", "automation") or "system" in a:
+        return "system"
+    return "agent"
+
+
+def _detect_action_badges(action: str) -> list[tuple[str, str]]:
+    """Detect key-event badges from an action's text. Returns (style, label) pairs."""
+    t = (action or "").lower()
+    badges = []
+    if "reopen" in t:
+        badges.append(("background:#fffbea;color:#854f0b;", "Reopened"))
+    if "escalat" in t:
+        badges.append(("background:#fff7ed;color:#9a3412;", "Escalated"))
+    if "callback" in t or "call back" in t or "called back" in t:
+        badges.append(("background:#eef3fb;color:#1B3A6B;", "Callback"))
+    if any(k in t for k in ("closed", "resolved", "status changed", "pending", "marked resolved")):
+        badges.append(("background:#f1f5f9;color:#5f5e5a;", "Status"))
+    if any(k in t for k in ("legal", "threatened", "complaint", "escalation to management")):
+        badges.append(("background:#fef2f2;color:#991b1b;", "Risk"))
+    return badges
+
+
+def _build_actions_timeline_html(actions_log: list, esc_fn=None) -> str:
+    """Render actions_log grouped by date, with actor dots and event badges.
+    Shared by the Streamlit view and the exported HTML report."""
+    import html as _html
+    esc = esc_fn or _html.escape
+    if not actions_log:
+        return "<p style='font-size:12px;color:#6b7280;'>No action data available.</p>"
+
+    _dot_c = {"agent": "#378ADD", "customer": "#1D9E75", "system": "#B4B2A9"}
+    _nm_c = {"agent": "#185FA5", "customer": "#0F6E56", "system": "#9ca3af"}
+
+    # Group consecutive entries by date (preserve order)
+    groups = []
+    for _al in actions_log:
+        if not isinstance(_al, dict):
+            continue
+        date = str(_al.get("date", "")).strip()
+        if not groups or groups[-1][0] != date:
+            groups.append((date, []))
+        groups[-1][1].append(_al)
+
+    parts = []
+    # Legend
+    parts.append(
+        "<div style='display:flex;gap:14px;margin-bottom:12px;flex-wrap:wrap;"
+        "font-size:11px;color:#6b7280;align-items:center;'>"
+        "<span style='display:flex;align-items:center;gap:5px;'>"
+        "<span style='width:9px;height:9px;border-radius:50%;background:#1D9E75;display:inline-block;'></span>Customer</span>"
+        "<span style='display:flex;align-items:center;gap:5px;'>"
+        "<span style='width:9px;height:9px;border-radius:50%;background:#378ADD;display:inline-block;'></span>Agent</span>"
+        "<span style='display:flex;align-items:center;gap:5px;'>"
+        "<span style='width:9px;height:9px;border-radius:50%;background:#B4B2A9;display:inline-block;'></span>System</span>"
+        "</div>"
+    )
+
+    for date, entries in groups:
+        parts.append(
+            "<div style='display:flex;align-items:center;gap:8px;margin:10px 0 4px;'>"
+            f"<span style='font-size:11px;font-weight:600;color:#185FA5;background:#E6F1FB;"
+            f"padding:2px 9px;border-radius:10px;'>{esc(date) if date else '—'}</span>"
+            "<span style='flex:1;height:1px;background:#e5e7eb;'></span>"
+            "</div>"
+        )
+        for _al in entries:
+            agent = _clean_agent_name(str(_al.get("agent", "")))
+            action = str(_al.get("action", ""))
+            actor = _classify_action_actor(_al.get("agent", ""))
+            dc = _dot_c.get(actor, "#B4B2A9")
+            nc = _nm_c.get(actor, "#6b7280")
+            ns = "font-style:italic;" if actor == "system" else ""
+            badges_h = ""
+            for style, label in _detect_action_badges(action):
+                badges_h += (
+                    f" <span style='{style}font-size:10px;font-weight:700;"
+                    f"padding:1px 6px;border-radius:3px;'>{esc(label)}</span>"
+                )
+            parts.append(
+                "<div style='display:flex;gap:9px;padding:5px 0;border-bottom:1px solid #f1f5f9;"
+                "align-items:flex-start;font-size:12px;'>"
+                f"<span style='display:inline-block;width:8px;height:8px;border-radius:50%;"
+                f"background:{dc};margin-top:4px;flex-shrink:0;'></span>"
+                f"<span style='font-weight:600;min-width:100px;flex-shrink:0;color:{nc};{ns}'>{esc(agent)}</span>"
+                f"<span style='flex:1;color:#374151;line-height:1.5;'>{esc(action)}{badges_h}</span>"
+                "</div>"
+            )
+    return "".join(parts)
+
+
 def _detect_update_flags(u: dict, prev_status: str | None) -> list[tuple[str, str]]:
     """Return list of (flag_type, label) for a single update."""
     flags = []
@@ -551,29 +648,33 @@ def build_interaction_figures(timeline: list):
             val.append(c); lc.append(_hex_rgba(PC[s], 0.4))
     fig_sk = go.Figure(go.Sankey(
         arrangement="snap",
-        node=dict(pad=28, thickness=28, line=dict(color="white", width=0),
+        node=dict(pad=26, thickness=20, line=dict(color="white", width=2),
                   label=[f"{l}  ({msg_counts[l]})" for l in p_labels],
                   color=list(PC.values()), hovertemplate="%{label}<extra></extra>"),
         link=dict(source=src, target=tgt, value=val, color=lc,
                   hovertemplate="%{source.label} → %{target.label}<br>%{value} handoff(s)<extra></extra>"),
+        textfont=dict(color="#1B3A6B", size=12, family="Segoe UI"),
     ))
-    fig_sk.update_layout(title=dict(text="Interaction Flow", x=0.5,
-        font=dict(size=13, color="#1B3A6B", family="Segoe UI")),
-        height=300, margin=dict(l=10, r=10, t=38, b=10),
+    fig_sk.update_layout(title=dict(text="Interaction Flow", x=0.5, xanchor="center",
+        font=dict(size=14, color="#1B3A6B", family="Segoe UI")),
+        height=300, margin=dict(l=12, r=12, t=44, b=12),
         paper_bgcolor="white", font=dict(family="Segoe UI", size=11))
 
     # ── Donut ───────────────────────────────────────────────────────────────
     active = {k: v for k, v in msg_counts.items() if v > 0}
     fig_pie = go.Figure(go.Pie(
-        labels=list(active.keys()), values=list(active.values()), hole=0.58,
-        marker=dict(colors=[PC[p] for p in active], line=dict(color="white", width=2)),
-        textinfo="label+percent", textfont=dict(size=11, family="Segoe UI"),
-        hovertemplate="%{label}<br>%{value} event(s) — %{percent}<extra></extra>"))
-    fig_pie.add_annotation(text=f"<b>{sum(active.values())}</b><br>events",
-        x=0.5, y=0.5, showarrow=False, font=dict(size=15, color="#1B3A6B", family="Segoe UI"))
-    fig_pie.update_layout(title=dict(text="Message Distribution", x=0.5,
-        font=dict(size=13, color="#1B3A6B", family="Segoe UI")),
-        height=300, margin=dict(l=10, r=10, t=38, b=10),
+        labels=list(active.keys()), values=list(active.values()), hole=0.62,
+        marker=dict(colors=[PC[p] for p in active], line=dict(color="white", width=3)),
+        textinfo="label+percent", textposition="outside",
+        textfont=dict(size=11, color="#374151", family="Segoe UI"),
+        hovertemplate="%{label}<br>%{value} event(s) — %{percent}<extra></extra>",
+        sort=False, rotation=0))
+    fig_pie.add_annotation(text=f"<b style='font-size:22px;'>{sum(active.values())}</b><br>"
+        "<span style='font-size:11px;color:#9ca3af;'>events</span>",
+        x=0.5, y=0.5, showarrow=False, font=dict(color="#1B3A6B", family="Segoe UI"))
+    fig_pie.update_layout(title=dict(text="Message Distribution", x=0.5, xanchor="center",
+        font=dict(size=14, color="#1B3A6B", family="Segoe UI")),
+        height=300, margin=dict(l=30, r=30, t=44, b=16),
         paper_bgcolor="white", showlegend=False)
 
     # ── Swimlane ────────────────────────────────────────────────────────────
@@ -614,10 +715,13 @@ def build_interaction_figures(timeline: list):
         if crit:
             fig_sw.add_annotation(x=i, y=y + 0.54, text="⚠️",
                 showarrow=False, font=dict(size=11), xanchor="center")
+    fig_sw.add_annotation(x=0.5, y=1.10, xref="paper", yref="paper", showarrow=False,
+        text="hover a dot for details   ·   ◆ diamond = critical event",
+        font=dict(size=10, color="#9ca3af", family="Segoe UI"), xanchor="center")
     fig_sw.update_layout(
-        title=dict(text="Swimlane  ·  hover dots for details  ·  ⚠️ diamond = critical event",
-            x=0.5, font=dict(size=12, color="#6b7280", family="Segoe UI")),
-        height=360, margin=dict(l=115, r=20, t=38, b=36),
+        title=dict(text="Interaction Swimlane", x=0.5, xanchor="center", y=0.97,
+            font=dict(size=14, color="#1B3A6B", family="Segoe UI")),
+        height=370, margin=dict(l=115, r=20, t=58, b=36),
         paper_bgcolor="white", plot_bgcolor="white",
         xaxis=dict(tickvals=list(range(n)), ticktext=[f"#{i+1}" for i in range(n)],
             showgrid=False, zeroline=False, tickfont=dict(size=10, color="#9ca3af")),
@@ -1738,6 +1842,10 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 <h2 class="section">Summary</h2>
 <div class="summary-box">{esc(v(ai.get('actions_summary')))}</div>
 
+{_det("📋 Actions Taken (" + str(len(ai.get('actions_log', []))) + ")",
+  _build_actions_timeline_html(ai.get('actions_log', []), esc), "")
+  if ai.get('actions_log') else ""}
+
 {_build_qa_badges_html(ai, esc)}
 
 {_det("📊 Agent Scorecard", _build_scorecard_html(ai.get('agents_involved', []), esc), "")}
@@ -2076,9 +2184,6 @@ if "ticket" in st.session_state:
             st.markdown(kv("Category", category_raw),                   unsafe_allow_html=True)
             st.markdown(kv("Updates",  len(ticket.get("updates", []))), unsafe_allow_html=True)
             st.markdown(kv("Time Spent", duration),                     unsafe_allow_html=True)
-        _tok = st.session_state.get("tokens")
-        if _tok:
-            st.caption(f"🧮 Claude usage: {_tok[0]:,} input · {_tok[1]:,} output tokens")
 
 
     # ── Customer Details ──────────────────────────────────────────────────────
@@ -2134,42 +2239,22 @@ if "ticket" in st.session_state:
         unsafe_allow_html=True,
     )
 
-    # ── Actions Taken (collapsed) ────────────────────────────────────────────
-    _actions_log = ai.get("actions_log", [])
-    if _actions_log:
-        with st.expander(f"📋 Actions Taken ({len(_actions_log)} entries)", expanded=False):
-            for _al in _actions_log:
-                if not isinstance(_al, dict):
-                    continue
-                _al_agent = html.escape(str(_al.get("agent", "")))
-                _al_date = html.escape(str(_al.get("date", "")))
-                _al_action = html.escape(str(_al.get("action", "")))
-                st.markdown(
-                    f"<p style='margin:2px 0;font-size:12px;line-height:1.7;color:#374151;'>"
-                    f"<span style='color:#6b7280;font-size:11px;'>[{_al_agent} · {_al_date}]</span> "
-                    f"{_al_action}</p>",
-                    unsafe_allow_html=True,
-                )
-
-    # ── Coaching Priority Banner ─────────────────────────────────────────────
-    _cp = ai.get("coaching_priority", "")
-    if _cp:
-        _cp_colors = {"URGENT": ("#991b1b", "#fef2f2", "#ef4444", "🔴"), "REVIEW": ("#92400e", "#fffbea", "#f59e0b", "🟡"), "GOOD": ("#166534", "#f0fdf4", "#16a34a", "🟢")}
-        _cp_text, _cp_bg, _cp_border, _cp_icon = _cp_colors.get(_cp.split()[0] if _cp else "", ("#6b7280", "#f8fafc", "#d1d5db", "⚪"))
-        st.markdown(
-            f"""<div style="background:{_cp_bg};border-left:4px solid {_cp_border};
-                            border-radius:0 6px 6px 0;padding:10px 16px;margin:4px 0 10px;">
-                <p style="margin:0;font-size:14px;font-weight:700;color:{_cp_text};">
-                    {_cp_icon} COACHING PRIORITY: {html.escape(_cp)}
-                </p>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+    # ── Insights (visible, blue) ──────────────────────────────────────────────
+    st.markdown(
+        f"""<div style="background:#eff6ff;border-left:4px solid #3b82f6;
+                        border-radius:0 6px 6px 0;padding:12px 16px;margin:8px 0 10px;">
+            <p style="margin:0;font-size:13px;">
+                <span style="font-weight:700;color:#1e40af;">💡 Insights:</span>&nbsp;
+                {html.escape(v(ai.get('actions_insights')))}
+            </p>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  TWO-TAB LAYOUT: Summary | Deep Dive
+    #  TWO-TAB LAYOUT: Details | Deep Dive
     # ══════════════════════════════════════════════════════════════════════════
-    _tab_summary, _tab_deep = st.tabs(["📄 Summary", "🔍 Deep Dive"])
+    _tab_summary, _tab_deep = st.tabs(["📄 Details", "🔍 Deep Dive"])
 
     with _tab_summary:
 
@@ -2178,42 +2263,22 @@ if "ticket" in st.session_state:
         if _figs:
             try:
                 _fig_sk, _fig_pie, _fig_sw = _figs
+                _plotly_cfg = {"displayModeBar": False, "responsive": True}
                 with st.expander("🎯 Executive Interaction Dashboard", expanded=False):
                     col_sk, col_pie = st.columns([3, 2])
                     with col_sk:
-                        st.plotly_chart(_fig_sk, use_container_width=True)
+                        st.plotly_chart(_fig_sk, use_container_width=True, config=_plotly_cfg)
                     with col_pie:
-                        st.plotly_chart(_fig_pie, use_container_width=True)
-                    st.plotly_chart(_fig_sw, use_container_width=True)
+                        st.plotly_chart(_fig_pie, use_container_width=True, config=_plotly_cfg)
+                    st.plotly_chart(_fig_sw, use_container_width=True, config=_plotly_cfg)
             except Exception as _exc:
                 st.error(f"Dashboard error: {_exc}")
 
-        # ── Insights (visible, yellow) ───────────────────────────────────────
-        st.markdown(
-            f"""<div style="background:#fffbea;border-left:4px solid #f59e0b;
-                            border-radius:0 6px 6px 0;padding:12px 16px;margin:8px 0 10px;">
-                <p style="margin:0;font-size:13px;">
-                    <span style="font-weight:700;color:#92400e;">💡 Insights:</span>&nbsp;
-                    {html.escape(v(ai.get('actions_insights')))}
-                </p>
-            </div>""",
-            unsafe_allow_html=True,
-        )
-
-        # ── Opportunities ────────────────────────────────────────────────────
-        opps = ai.get("opportunities", [])
-        with st.expander(f"🎯 Opportunities ({len(opps)})", expanded=False):
-            if opps:
-                for o in opps:
-                    st.markdown(
-                        f"<p style='margin:4px 0;font-size:13px;color:#7f1d1d;'>• {html.escape(str(o))}</p>",
-                        unsafe_allow_html=True,
-                    )
-            else:
-                st.markdown(
-                    "<p style='margin:0;font-size:13px;color:#6b7280;'>No issues identified.</p>",
-                    unsafe_allow_html=True,
-                )
+        # ── Actions Taken (collapsed, grouped by date) ───────────────────────
+        _actions_log = ai.get("actions_log", [])
+        if _actions_log:
+            with st.expander(f"📋 Actions Taken ({len(_actions_log)} entries)", expanded=False):
+                st.markdown(_build_actions_timeline_html(_actions_log), unsafe_allow_html=True)
 
         # ── Recommended Next Steps ───────────────────────────────────────────
         with st.expander("✅ Recommended Next Steps", expanded=False):
@@ -2227,19 +2292,20 @@ if "ticket" in st.session_state:
         _eff_r = ai.get("efficiency_rating", "")
         _root_c = ai.get("root_cause", "")
         if _res_q or _eff_r or _root_c:
-            _badge_cols = st.columns(3)
-            with _badge_cols[0]:
-                if _res_q:
-                    _rq_colors = {"Verified Fix": "#16a34a", "Assumed Fix": "#f59e0b", "Workaround": "#f59e0b", "Unresolved": "#ef4444", "Premature Close": "#ef4444"}
-                    _rq_c = _rq_colors.get(_res_q.split(" —")[0].strip() if " —" in _res_q else _res_q.strip(), "#6b7280")
-                    st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Resolution Quality</p><p style='margin:0;font-size:14px;font-weight:700;color:{_rq_c};'>{html.escape(_res_q)}</p></div>", unsafe_allow_html=True)
-            with _badge_cols[1]:
-                if _eff_r:
-                    _ef_c = "#16a34a" if _eff_r.startswith("Efficient") else ("#f59e0b" if _eff_r.startswith("Acceptable") else "#ef4444")
-                    st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Efficiency</p><p style='margin:0;font-size:14px;font-weight:700;color:{_ef_c};'>{html.escape(_eff_r)}</p></div>", unsafe_allow_html=True)
-            with _badge_cols[2]:
-                if _root_c:
-                    st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Root Cause</p><p style='margin:0;font-size:14px;font-weight:700;color:#1B3A6B;'>{html.escape(_root_c)}</p></div>", unsafe_allow_html=True)
+            with st.expander("🏁 Resolution · Efficiency · Root Cause", expanded=False):
+                _badge_cols = st.columns(3)
+                with _badge_cols[0]:
+                    if _res_q:
+                        _rq_colors = {"Verified Fix": "#16a34a", "Assumed Fix": "#f59e0b", "Workaround": "#f59e0b", "Unresolved": "#ef4444", "Premature Close": "#ef4444"}
+                        _rq_c = _rq_colors.get(_res_q.split(" —")[0].strip() if " —" in _res_q else _res_q.strip(), "#6b7280")
+                        st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Resolution Quality</p><p style='margin:0;font-size:14px;font-weight:700;color:{_rq_c};'>{html.escape(_res_q)}</p></div>", unsafe_allow_html=True)
+                with _badge_cols[1]:
+                    if _eff_r:
+                        _ef_c = "#16a34a" if _eff_r.startswith("Efficient") else ("#f59e0b" if _eff_r.startswith("Acceptable") else "#ef4444")
+                        st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Efficiency</p><p style='margin:0;font-size:14px;font-weight:700;color:{_ef_c};'>{html.escape(_eff_r)}</p></div>", unsafe_allow_html=True)
+                with _badge_cols[2]:
+                    if _root_c:
+                        st.markdown(f"<div style='background:white;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;'><p style='margin:0 0 2px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;'>Root Cause</p><p style='margin:0;font-size:14px;font-weight:700;color:#1B3A6B;'>{html.escape(_root_c)}</p></div>", unsafe_allow_html=True)
 
         # ── Agent Scorecard ──────────────────────────────────────────────────
         _agents_ai = ai.get("agents_involved", [])
@@ -2275,6 +2341,21 @@ if "ticket" in st.session_state:
                         <th style='padding:8px 10px;text-align:left;'>Summary</th>
                     </tr></thead>
                     <tbody>{_sc_rows}</tbody></table>""",
+                    unsafe_allow_html=True,
+                )
+
+        # ── Opportunities ────────────────────────────────────────────────────
+        opps = ai.get("opportunities", [])
+        with st.expander(f"🎯 Opportunities ({len(opps)})", expanded=False):
+            if opps:
+                for o in opps:
+                    st.markdown(
+                        f"<p style='margin:4px 0;font-size:13px;color:#7f1d1d;'>• {html.escape(str(o))}</p>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    "<p style='margin:0;font-size:13px;color:#6b7280;'>No issues identified.</p>",
                     unsafe_allow_html=True,
                 )
 
@@ -2505,7 +2586,8 @@ if "ticket" in st.session_state:
         # ── Interactive Plotly chart (shared builder) ──────────────────────────
         fig = build_dot_timeline_figure(timeline)
         if fig is not None:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True,
+                config={"displayModeBar": False, "responsive": True})
         elif timeline:
             st.info("Run `pip install plotly` to enable the interactive timeline.")
 
