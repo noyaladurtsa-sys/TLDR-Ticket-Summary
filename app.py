@@ -2023,7 +2023,7 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 <h2 class="section">Summary</h2>
 <div class="summary-box">{esc(v(ai.get('actions_summary')))}</div>
 
-{_det("📋 Actions Taken (" + str(len(ai.get('actions_log', []))) + ")",
+{_det("📋 What Happened? (" + str(len(ai.get('actions_log', []))) + ")",
   _build_actions_timeline_html(ai.get('actions_log', []), esc), "")
   if ai.get('actions_log') else ""}
 
@@ -2453,10 +2453,10 @@ if "ticket" in st.session_state:
             except Exception as _exc:
                 st.error(f"Dashboard error: {_exc}")
 
-        # ── Actions Taken (collapsed, grouped by date) ───────────────────────
+        # ── What Happened? (Actions Taken timeline, grouped by date) ──────────
         _actions_log = ai.get("actions_log", [])
         if _actions_log:
-            with st.expander(f"📋 Actions Taken ({len(_actions_log)} entries)", expanded=False):
+            with st.expander(f"📋 What Happened? ({len(_actions_log)} entries)", expanded=False):
                 st.markdown(_build_actions_timeline_html(_actions_log), unsafe_allow_html=True)
 
         # ── Opportunities ────────────────────────────────────────────────────
