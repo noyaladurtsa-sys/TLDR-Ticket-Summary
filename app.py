@@ -1399,7 +1399,7 @@ def _build_dashboard_html(timeline: list) -> str:
         cfg = {"responsive": True, "displayModeBar": False}
         sw_html = fig_sw.to_html(full_html=False, include_plotlyjs=False, config=cfg)
         return f"""
-        <h2>Executive Interaction Dashboard</h2>
+        <h2>Case Snapshot</h2>
         <div style="margin-bottom:20px;">{sw_html}</div>
         """
     except Exception:
@@ -1916,7 +1916,7 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
     # Dashboard: strip its outer section title if present
     _dash_title, _dash_inner = _strip_h2(_dash_html)
     if not _dash_title:
-        _dash_title = "Executive Interaction Dashboard"
+        _dash_title = "Case Snapshot"
         _dash_inner = _dash_html
     # Prepend KPI stat cards to the dashboard
     _dash_inner = _build_dashboard_kpis_html(ai, ai.get('timeline', []), esc) + _dash_inner
@@ -2042,7 +2042,7 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 {_det("🎓 Coaching Notes (" + str(len(ai.get('coaching_notes', []))) + ")",
   _build_coaching_notes_html(ai.get('coaching_notes', []), esc), "")}
 
-{_det("🎯 Executive Interaction Dashboard", _dash_inner, "")}
+{_det("📸 Case Snapshot", _dash_inner, "")}
 
 {_det("📋 What Happened?", actions_block, "")}
 
@@ -2445,7 +2445,7 @@ if "ticket" in st.session_state:
             try:
                 _fig_sk, _fig_pie, _fig_sw = _figs
                 _plotly_cfg = {"displayModeBar": False, "responsive": True}
-                with st.expander("🎯 Executive Interaction Dashboard", expanded=False):
+                with st.expander("📸 Case Snapshot", expanded=False):
                     st.markdown(_build_dashboard_kpis_html(ai, timeline), unsafe_allow_html=True)
                     _sw_l, _sw_c, _sw_r = st.columns([1, 8, 1])
                     with _sw_c:
