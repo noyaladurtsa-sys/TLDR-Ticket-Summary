@@ -1347,17 +1347,11 @@ def _build_dashboard_html(timeline: list) -> str:
     if not figs:
         return ""
     try:
-        fig_sk, fig_pie, fig_sw = figs
+        _fsk, _fpie, fig_sw = figs
         cfg = {"responsive": True, "displayModeBar": False}
-        sk_html  = fig_sk.to_html(full_html=False, include_plotlyjs=False, config=cfg)
-        pie_html = fig_pie.to_html(full_html=False, include_plotlyjs=False, config=cfg)
-        sw_html  = fig_sw.to_html(full_html=False, include_plotlyjs=False, config=cfg)
+        sw_html = fig_sw.to_html(full_html=False, include_plotlyjs=False, config=cfg)
         return f"""
         <h2>Executive Interaction Dashboard</h2>
-        <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:12px;">
-          <div>{sk_html}</div>
-          <div>{pie_html}</div>
-        </div>
         <div style="margin-bottom:20px;">{sw_html}</div>
         """
     except Exception:
@@ -2405,11 +2399,6 @@ if "ticket" in st.session_state:
                 _plotly_cfg = {"displayModeBar": False, "responsive": True}
                 with st.expander("🎯 Executive Interaction Dashboard", expanded=False):
                     st.markdown(_build_dashboard_kpis_html(ai, timeline), unsafe_allow_html=True)
-                    col_sk, col_pie = st.columns([3, 2])
-                    with col_sk:
-                        st.plotly_chart(_fig_sk, use_container_width=True, config=_plotly_cfg)
-                    with col_pie:
-                        st.plotly_chart(_fig_pie, use_container_width=True, config=_plotly_cfg)
                     st.plotly_chart(_fig_sw, use_container_width=True, config=_plotly_cfg)
             except Exception as _exc:
                 st.error(f"Dashboard error: {_exc}")
