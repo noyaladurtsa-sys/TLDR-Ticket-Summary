@@ -2049,7 +2049,7 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 <h2 class="section">Insights</h2>
 <div class="insights-box">{esc(v(ai.get('actions_insights')))}</div>
 
-{_det("🎯 What Happened?", "<ul>" + opps_html_r + "</ul>", "")}
+{_det("🎯 Opportunities", "<ul>" + opps_html_r + "</ul>", "")}
 
 {_det("✅ Recommended Next Steps", "<ul>" + steps_html + "</ul>", "")}
 
@@ -2459,9 +2459,9 @@ if "ticket" in st.session_state:
             with st.expander(f"📋 Actions Taken ({len(_actions_log)} entries)", expanded=False):
                 st.markdown(_build_actions_timeline_html(_actions_log), unsafe_allow_html=True)
 
-        # ── What Happened? (formerly Opportunities) ──────────────────────────
+        # ── Opportunities ────────────────────────────────────────────────────
         opps = ai.get("opportunities", [])
-        with st.expander(f"🎯 What Happened? ({len(opps)})", expanded=False):
+        with st.expander(f"🎯 Opportunities ({len(opps)})", expanded=False):
             if opps:
                 for o in opps:
                     st.markdown(
