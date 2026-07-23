@@ -2049,7 +2049,7 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
 <h2 class="section">Insights</h2>
 <div class="insights-box">{esc(v(ai.get('actions_insights')))}</div>
 
-{_det("🎯 Opportunities", "<ul>" + opps_html_r + "</ul>", "")}
+{_det("🎯 What Happened?", "<ul>" + opps_html_r + "</ul>", "")}
 
 {_det("✅ Recommended Next Steps", "<ul>" + steps_html + "</ul>", "")}
 
@@ -2459,6 +2459,21 @@ if "ticket" in st.session_state:
             with st.expander(f"📋 Actions Taken ({len(_actions_log)} entries)", expanded=False):
                 st.markdown(_build_actions_timeline_html(_actions_log), unsafe_allow_html=True)
 
+        # ── What Happened? (formerly Opportunities) ──────────────────────────
+        opps = ai.get("opportunities", [])
+        with st.expander(f"🎯 What Happened? ({len(opps)})", expanded=False):
+            if opps:
+                for o in opps:
+                    st.markdown(
+                        f"<p style='margin:4px 0;font-size:13px;color:#7f1d1d;'>• {html.escape(str(o))}</p>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    "<p style='margin:0;font-size:13px;color:#6b7280;'>No issues identified.</p>",
+                    unsafe_allow_html=True,
+                )
+
         # ── Recommended Next Steps ───────────────────────────────────────────
         with st.expander("✅ Recommended Next Steps", expanded=False):
             for s in ai.get("next_steps", []):
@@ -2520,21 +2535,6 @@ if "ticket" in st.session_state:
                         <th style='padding:8px 10px;text-align:left;'>Summary</th>
                     </tr></thead>
                     <tbody>{_sc_rows}</tbody></table>""",
-                    unsafe_allow_html=True,
-                )
-
-        # ── Opportunities ────────────────────────────────────────────────────
-        opps = ai.get("opportunities", [])
-        with st.expander(f"🎯 Opportunities ({len(opps)})", expanded=False):
-            if opps:
-                for o in opps:
-                    st.markdown(
-                        f"<p style='margin:4px 0;font-size:13px;color:#7f1d1d;'>• {html.escape(str(o))}</p>",
-                        unsafe_allow_html=True,
-                    )
-            else:
-                st.markdown(
-                    "<p style='margin:0;font-size:13px;color:#6b7280;'>No issues identified.</p>",
                     unsafe_allow_html=True,
                 )
 
