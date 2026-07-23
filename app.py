@@ -733,6 +733,143 @@ def build_interaction_figures(timeline: list):
     return fig_sk, fig_pie, fig_sw
 
 
+def _build_dashboard_kpis_html(ai: dict, timeline: list, esc_fn=None) -> str:
+    """KPI stat-card strip + agent scores + customer sentiment journey.
+    Uses only existing data — no API cost. Shared by app view and HTML report."""
+    import html as _html
+    from datetime import datetime as _dt
+    esc = esc_fn or _html.escape
+
+    # ── Derive metrics ────────────────────────────────────────────────────────
+    resolution = str(ai.get("resolution_quality", "") or "").strip()
+    _res_head = resolution.split(" —")[0].strip() if " —" in resolution else resolution
+
+    # Days open (timeline dates are ISO YYYY-MM-DD)
+    days_open = None
+    _dates = [str(e.get("date", "")).strip() for e in timeline if e.get("date")]
+    if len(_dates) >= 2:
+        try:
+            _d0 = _dt.strptime(_dates[0], "%Y-%m-%d")
+            _d1 = _dt.strptime(_dates[-1], "%Y-%m-%d")
+            days_open = (_d1 - _d0).days
+        except ValueError:
+            days_open = None
+
+    # Handoffs (persona changes across timeline)
+    handoffs, _prev = 0, None
+    for e in timeline:
+        g = persona_group(e.get("author", ""))
+        if _prev and g != _prev:
+            handoffs += 1
+        _prev = g
+
+    # Agents involved
+    _agents = [a for a in ai.get("agents_involved", []) if isinstance(a, dict) and a.get("name")]
+    n_agents = len(_agents)
+
+    # Callbacks missed / premature closes
+    _cb_log = ai.get("callback_promise_log", []) or []
+    callbacks_missed = len([c for c in _cb_log if isinstance(c, dict) and c.get("status") == "Breached"])
+    if not callbacks_missed:
+        try:
+            callbacks_missed = int(ai.get("callback_breaches", 0) or 0)
+        except (ValueError, TypeError):
+            callbacks_missed = 0
+    premature = len(ai.get("premature_closes", []) or [])
+
+    # Avg agent scores
+    _ts = [a["technical_score"] for a in _agents if isinstance(a.get("technical_score"), int)]
+    _hs = [a["handling_score"] for a in _agents if isinstance(a.get("handling_score"), int)]
+    avg_tech = round(sum(_ts) / len(_ts), 1) if _ts else None
+    avg_hand = round(sum(_hs) / len(_hs), 1) if _hs else None
+
+    def _score_color(v):
+        if v is None:
+            return "#6b7280"
+        return "#e24b4a" if v <= 2.5 else ("#ba7517" if v <= 3.5 else "#3B6D11")
+
+    def _card(label, value, tone="neutral", icon=""):
+        tones = {
+            "neutral": ("#ffffff", "#e5e7eb", "#6b7280", "#1B3A6B"),
+            "danger":  ("#fef2f2", "#fca5a5", "#991b1b", "#991b1b"),
+            "warning": ("#fffbea", "#fcd34d", "#854f0b", "#854f0b"),
+            "good":    ("#f0fdf4", "#86efac", "#166534", "#166534"),
+        }
+        bg, bd, lc, vc = tones.get(tone, tones["neutral"])
+        _ic = f"<span style='margin-right:3px;'>{icon}</span>" if icon else ""
+        return (
+            f"<div style='background:{bg};border:1px solid {bd};border-radius:10px;padding:11px 13px;'>"
+            f"<div style='font-size:10px;color:{lc};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;'>{_ic}{esc(label)}</div>"
+            f"<div style='font-size:19px;font-weight:700;color:{vc};line-height:1.1;'>{value}</div>"
+            f"</div>"
+        )
+
+    # Resolution tone
+    _res_tone = "neutral"
+    if _res_head in ("Unresolved", "Premature Close"):
+        _res_tone = "danger"
+    elif _res_head in ("Assumed Fix", "Workaround"):
+        _res_tone = "warning"
+    elif _res_head == "Verified Fix":
+        _res_tone = "good"
+
+    cards = []
+    if resolution:
+        cards.append(_card("Resolution", esc(_res_head or resolution), _res_tone))
+    if days_open is not None:
+        cards.append(_card("Days Open", days_open))
+    if n_agents:
+        cards.append(_card("Agents", n_agents))
+    cards.append(_card("Handoffs", handoffs))
+    cards.append(_card("Callbacks Missed", callbacks_missed, "danger" if callbacks_missed else "good"))
+    cards.append(_card("Premature Closes", premature, "danger" if premature else "good"))
+
+    kpi_grid = (
+        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));"
+        "gap:9px;margin-bottom:14px;'>" + "".join(cards) + "</div>"
+    )
+
+    # ── Agent score + sentiment panels ────────────────────────────────────────
+    panels = []
+    if avg_tech is not None or avg_hand is not None:
+        _t_html = f"<span style='font-size:11px;color:#6b7280;'>Technical</span><div style='font-size:17px;font-weight:700;color:{_score_color(avg_tech)};'>{avg_tech if avg_tech is not None else '—'}<span style='font-size:11px;color:#9ca3af;'>/5</span></div>"
+        _h_html = f"<span style='font-size:11px;color:#6b7280;'>Handling</span><div style='font-size:17px;font-weight:700;color:{_score_color(avg_hand)};'>{avg_hand if avg_hand is not None else '—'}<span style='font-size:11px;color:#9ca3af;'>/5</span></div>"
+        panels.append(
+            "<div style='flex:1;min-width:150px;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:11px 13px;'>"
+            "<div style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px;'>Avg agent scores</div>"
+            f"<div style='display:flex;gap:20px;'><div>{_t_html}</div><div>{_h_html}</div></div>"
+            "</div>"
+        )
+
+    # Sentiment journey — approximate tension per timeline entry
+    if timeline:
+        _frust_kw = ("angry", "frustrat", "upset", "disappoint", "unhappy", "threat",
+                     "complaint", "legal", "demand", "refus", "escalat", "urgent")
+        bars = ""
+        for e in timeline:
+            _s = str(e.get("summary", "")).lower()
+            if any(k in _s for k in CRITICAL_KW):
+                col, h = "#E24B4A", 100
+            elif any(k in _s for k in _frust_kw):
+                col, h = "#EF9F27", 72
+            else:
+                col, h = "#5DCAA5", 46
+            bars += f"<span style='flex:1;background:{col};height:{h}%;border-radius:2px;min-width:3px;'></span>"
+        panels.append(
+            "<div style='flex:1;min-width:180px;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:11px 13px;'>"
+            "<div style='font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px;'>Customer sentiment journey</div>"
+            f"<div style='display:flex;align-items:flex-end;gap:3px;height:34px;'>{bars}</div>"
+            "<div style='font-size:10px;color:#9ca3af;margin-top:4px;'>calm → frustrated over time</div>"
+            "</div>"
+        )
+
+    panel_row = ""
+    if panels:
+        panel_row = "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;'>" + "".join(panels) + "</div>"
+
+    return kpi_grid + panel_row
+
+
 def build_dot_timeline_figure(timeline: list):
     """Interactive dot-timeline Plotly figure. Returns None if unavailable/empty.
 
@@ -1739,6 +1876,8 @@ def build_html_report(ticket: dict, ai: dict, ticket_url: str, contact: dict) ->
     if not _dash_title:
         _dash_title = "Executive Interaction Dashboard"
         _dash_inner = _dash_html
+    # Prepend KPI stat cards to the dashboard
+    _dash_inner = _build_dashboard_kpis_html(ai, ai.get('timeline', []), esc) + _dash_inner
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -2265,6 +2404,7 @@ if "ticket" in st.session_state:
                 _fig_sk, _fig_pie, _fig_sw = _figs
                 _plotly_cfg = {"displayModeBar": False, "responsive": True}
                 with st.expander("🎯 Executive Interaction Dashboard", expanded=False):
+                    st.markdown(_build_dashboard_kpis_html(ai, timeline), unsafe_allow_html=True)
                     col_sk, col_pie = st.columns([3, 2])
                     with col_sk:
                         st.plotly_chart(_fig_sk, use_container_width=True, config=_plotly_cfg)
