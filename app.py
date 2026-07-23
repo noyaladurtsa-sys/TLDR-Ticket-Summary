@@ -867,7 +867,55 @@ def _build_dashboard_kpis_html(ai: dict, timeline: list, esc_fn=None) -> str:
     if panels:
         panel_row = "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;'>" + "".join(panels) + "</div>"
 
-    return kpi_grid + panel_row
+    # ── "What this shows" narrative (auto-built from the metrics above) ────────
+    narrative_box = ""
+    if timeline:
+        touchpoints = len(timeline)
+        _escalations = sum(1 for e in timeline if "escalat" in str(e.get("summary", "")).lower())
+        _lanes = {persona_group(e.get("author", "")) for e in timeline}
+
+        bits = []
+        _dur = f"{days_open}-day" if days_open else "short"
+        _agent_txt = f"{n_agents} agent{'s' if n_agents != 1 else ''}" if n_agents else "the support team"
+        bits.append(f"A {_dur} case handled by {_agent_txt} across {touchpoints} touchpoint{'s' if touchpoints != 1 else ''}.")
+
+        _lane_bits = []
+        if "CAT Team" in _lanes:
+            _lane_bits.append("reached the CAT team")
+        else:
+            _lane_bits.append("stayed on the front-line support lane")
+        if _escalations:
+            _lane_bits.append(f"escalated {_escalations} time{'s' if _escalations != 1 else ''}")
+        if premature:
+            _lane_bits.append(f"was closed prematurely {premature} time{'s' if premature != 1 else ''}")
+        if callbacks_missed:
+            _lane_bits.append(f"missed {callbacks_missed} callback{'s' if callbacks_missed != 1 else ''}")
+        if _lane_bits:
+            bits.append("It " + ", ".join(_lane_bits) + ".")
+
+        # Sentiment trend: critical density in the last third vs first third
+        if touchpoints >= 3:
+            _third = max(1, touchpoints // 3)
+            _crit = [any(k in str(e.get("summary", "")).lower() for k in CRITICAL_KW) for e in timeline]
+            _early, _late = sum(_crit[:_third]), sum(_crit[-_third:])
+            _sent = "with the customer growing more frustrated over time" if _late > _early else \
+                    ("with tension easing toward the end" if _early > _late else "with steady customer sentiment")
+        else:
+            _sent = ""
+        _end = _res_head or resolution
+        if _end:
+            bits.append(f"It ended <b>{esc(_end)}</b>" + (f" {_sent}." if _sent else "."))
+
+        narrative_box = (
+            "<div style='background:#eff6ff;border-left:4px solid #3b82f6;border-radius:0 8px 8px 0;"
+            "padding:11px 14px;margin-bottom:14px;'>"
+            "<div style='font-size:10px;font-weight:700;color:#1e40af;text-transform:uppercase;"
+            "letter-spacing:.05em;margin-bottom:3px;'>What this shows</div>"
+            f"<div style='font-size:12px;line-height:1.6;color:#1e3a5f;'>{' '.join(bits)}</div>"
+            "</div>"
+        )
+
+    return narrative_box + kpi_grid + panel_row
 
 
 def build_dot_timeline_figure(timeline: list):
@@ -2399,7 +2447,9 @@ if "ticket" in st.session_state:
                 _plotly_cfg = {"displayModeBar": False, "responsive": True}
                 with st.expander("🎯 Executive Interaction Dashboard", expanded=False):
                     st.markdown(_build_dashboard_kpis_html(ai, timeline), unsafe_allow_html=True)
-                    st.plotly_chart(_fig_sw, use_container_width=True, config=_plotly_cfg)
+                    _sw_l, _sw_c, _sw_r = st.columns([1, 8, 1])
+                    with _sw_c:
+                        st.plotly_chart(_fig_sw, use_container_width=True, config=_plotly_cfg)
             except Exception as _exc:
                 st.error(f"Dashboard error: {_exc}")
 
