@@ -8,6 +8,12 @@ __pycache__/
 *.pyd
 .env
 
+# Node
+node_modules/
+
+# Installers — too large for git
+*.exe
+
 # Temp / lock files
 ~$*
 *.tmp

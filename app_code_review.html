@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>app.py — Code Review (Resolved)</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #1a1a2e; font-size: 11.5px; line-height: 1.55;
+    margin: 0;
+  }
+  h1 { color: #1B3A6B; font-size: 24px; margin: 0 0 2px; letter-spacing: -.4px; }
+  .sub { color: #6b7280; font-size: 12px; margin: 0 0 18px; }
+  h2 {
+    color: #1B3A6B; font-size: 15px; margin: 22px 0 8px;
+    border-bottom: 2px solid #1B3A6B; padding-bottom: 4px;
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  h3 { font-size: 12.5px; margin: 14px 0 4px; color: #1a1a2e; }
+  p { margin: 5px 0; }
+  code {
+    font-family: 'Consolas', monospace; font-size: 10.5px;
+    background: #f3f4f6; padding: 1px 5px; border-radius: 3px; color: #b91c1c;
+  }
+  .meta { background:#f0fdf4; border-left:4px solid #16a34a; padding:10px 14px; border-radius:0 6px 6px 0; margin-bottom:18px; font-size:11px; }
+  .banner { background:#16a34a; color:white; border-radius:6px; padding:10px 16px; margin-bottom:16px; font-size:13px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  th, td { border: 1px solid #d1d5db; padding: 6px 9px; text-align: left; vertical-align: top; font-size: 10.5px; }
+  th { background: #1B3A6B; color: white; font-size: 9.5px; text-transform: uppercase; letter-spacing:.05em; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .issue { border:1px solid #e5e7eb; border-radius:7px; padding:11px 14px; margin:10px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); break-inside: avoid; }
+  .issue h3 { margin-top: 0; display:flex; align-items:center; gap:8px; }
+  .badge { font-size:8.5px; font-weight:700; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.04em; color:white; white-space:nowrap; }
+  .sev-high { background:#dc2626; }
+  .sev-med  { background:#d97706; }
+  .sev-low  { background:#0891b2; }
+  .sev-info { background:#6b7280; }
+  .fixed { background:#16a34a; }
+  .loc { font-family:'Consolas',monospace; font-size:9.5px; color:#6b7280; }
+  .fix { background:#f0fdf4; border-left:3px solid #16a34a; padding:6px 10px; margin-top:6px; border-radius:0 4px 4px 0; }
+  .fix b { color:#15803d; }
+  .verify { background:#eef3fb; border-left:3px solid #1B3A6B; padding:6px 10px; margin-top:6px; border-radius:0 4px 4px 0; font-size:10.5px; }
+  ul { margin:5px 0; padding-left:18px; }
+  li { margin:3px 0; }
+  .footer { margin-top:26px; padding-top:8px; border-top:1px solid #d1d5db; font-size:9px; color:#9ca3af; display:flex; justify-content:space-between; }
+  .nowrap { white-space: nowrap; }
+  .strike { text-decoration: line-through; color:#9ca3af; }
+</style>
+</head>
+<body>
+
+<h1>Code Review — <code style="color:#b91c1c;background:none;font-size:20px;">app.py</code></h1>
+<p class="sub">Happy Link Claude TLDR Ticket Summary · Streamlit + HappyFox + Claude · post-fix verification report</p>
+
+<div class="banner">
+  <span>✅ All 12 catalogued severity issues resolved</span>
+  <span style="font-weight:400;font-size:11px;">Reviewed 2026-06-04 · re-issued after fixes</span>
+</div>
+
+<div class="meta">
+  <b>Status:</b> Every High / Medium / Low issue from the original review has been fixed, syntax-checked
+  (<code>py_compile</code>), and smoke-tested by importing the module and exercising the affected functions
+  with adversarial input. The two items previously marked <b>Note</b> (not severity-ranked) were left as-is by
+  decision and are listed at the end. One additional latent crash found during verification was also fixed.
+  <br><b>Net change:</b> ~260 lines of duplicated chart/parsing logic removed; shared helpers now back both
+  the on-screen UI and the downloadable HTML report.
+</div>
+
+<h2>Resolution Summary</h2>
+<table>
+  <tr><th>#</th><th>Issue</th><th class="nowrap">Sev</th><th class="nowrap">Status</th><th>Resolution</th></tr>
+  <tr><td>1</td><td>Unescaped ticket / AI content injected into HTML (HTML/JS injection)</td><td><span class="badge sev-high">High</span></td><td><span class="badge fixed">Fixed</span></td><td><code>html.escape</code> on all dynamic values</td></tr>
+  <tr><td>2</td><td>Hardcoded absolute Windows path for logo</td><td><span class="badge sev-high">High</span></td><td><span class="badge fixed">Fixed</span></td><td>Resolved relative to <code>__file__</code></td></tr>
+  <tr><td>3</td><td>Dashboard Plotly code duplicated</td><td><span class="badge sev-med">Medium</span></td><td><span class="badge fixed">Fixed</span></td><td><code>build_interaction_figures()</code> shared</td></tr>
+  <tr><td>4</td><td>"What Happened?" / actions logic duplicated</td><td><span class="badge sev-med">Medium</span></td><td><span class="badge fixed">Fixed</span></td><td><code>iter_update_actions()</code> shared</td></tr>
+  <tr><td>5</td><td>Re-analysing inserts duplicate DB rows</td><td><span class="badge sev-med">Medium</span></td><td><span class="badge fixed">Fixed</span></td><td><code>DELETE</code> prior rows before insert</td></tr>
+  <tr><td>6</td><td>Silent <code>except: pass</code> hides failures</td><td><span class="badge sev-med">Medium</span></td><td><span class="badge fixed">Fixed</span></td><td><code>logger.warning</code> + user toast</td></tr>
+  <tr><td>7</td><td>Hardcoded agent first names in persona styling</td><td><span class="badge sev-low">Low</span></td><td><span class="badge fixed">Fixed</span></td><td>Name-agnostic <code>persona_group()</code></td></tr>
+  <tr><td>8</td><td>Dead code: <code>parse_ts()</code></td><td><span class="badge sev-low">Low</span></td><td><span class="badge fixed">Fixed</span></td><td>Removed</td></tr>
+  <tr><td>9</td><td><code>_grp()</code> redefined 3×</td><td><span class="badge sev-low">Low</span></td><td><span class="badge fixed">Fixed</span></td><td>Single module-level helper</td></tr>
+  <tr><td>10</td><td>Token usage tracked but never shown</td><td><span class="badge sev-low">Low</span></td><td><span class="badge fixed">Fixed</span></td><td>Caption in Ticket Overview</td></tr>
+  <tr><td>11</td><td>Pagination may under-fetch</td><td><span class="badge sev-low">Low</span></td><td><span class="badge fixed">Fixed</span></td><td>Empty-batch stop + count check + cap</td></tr>
+  <tr><td>12</td><td>Missing secrets raise raw KeyError</td><td><span class="badge sev-low">Low</span></td><td><span class="badge fixed">Fixed</span></td><td>Friendly <code>st.error</code> + <code>st.stop()</code></td></tr>
+  <tr><td>+</td><td>Non-dict update guard missing in 3 helpers (found in verification)</td><td><span class="badge sev-med">Bonus</span></td><td><span class="badge fixed">Fixed</span></td><td><code>isinstance(u, dict)</code> guard added</td></tr>
+</table>
+
+<h2>Verification performed</h2>
+<ul>
+  <li><code>python -m py_compile app.py</code> → <b>SYNTAX OK</b></li>
+  <li>Module imports cleanly in bare mode (top-level UI code executes without error).</li>
+  <li><b>Escaping:</b> payloads <code>&lt;script&gt;</code>, <code>&lt;img src=x onerror=alert(1)&gt;</code>, and <code>&lt;b&gt;Bob&lt;/b&gt;</code> all confirmed rendered as escaped entities — no raw markup reaches the report or the UI.</li>
+  <li><b>Shared figures:</b> <code>build_interaction_figures()</code> returns the 3 expected figures; <code>build_dot_timeline_figure()</code> renders; both return <code>None</code> on empty timeline.</li>
+  <li><b>Shared actions:</b> <code>iter_update_actions()</code> yields correct counts, skips boilerplate + non-dict placeholders, labels smart-rules as System, and captures CSAT.</li>
+  <li>Full report builds successfully even when <code>updates</code> contains an integer placeholder (the case that previously crashed <code>_build_agents_html</code>).</li>
+</ul>
+
+<h2>Security (resolved)</h2>
+
+<div class="issue">
+  <h3><span class="badge sev-high">High</span> <span class="badge fixed">Fixed</span> 1 · HTML/JS injection</h3>
+  <p>All AI- and ticket-derived strings are now passed through <code>html.escape</code> before reaching any
+  <code>unsafe_allow_html</code> sink or the downloadable report. Covered: subject (+ translation), opportunities,
+  next steps, problem/summary/insights, timeline table, device/customer grids, and the cached-report panel. The
+  on-screen helpers <code>kv()</code> and <code>detail_row()</code> now escape their values internally.</p>
+  <div class="verify"><b>Verified:</b> a ticket subject of <code>Bad &lt;img src=x onerror=alert(1)&gt;</code>
+  appears in the report as <code>&amp;lt;img src=x onerror=alert(1)&amp;gt;</code> — inert text, not an executable tag.</div>
+</div>
+
+<h2>Portability (resolved)</h2>
+<div class="issue">
+  <h3><span class="badge sev-high">High</span> <span class="badge fixed">Fixed</span> 2 · Logo path</h3>
+  <p><span class="loc">_APP_DIR = os.path.dirname(os.path.abspath(__file__))</span> then
+  <code>PILImage.open(os.path.join(_APP_DIR, "router_nobg.png"))</code>. The app no longer depends on a fixed
+  Desktop location and will load on a clone or deployment.</p>
+</div>
+
+<h2>Maintainability &amp; Duplication (resolved)</h2>
+<div class="issue">
+  <h3><span class="badge sev-med">Medium</span> <span class="badge fixed">Fixed</span> 3 &amp; 4 · Chart and actions duplication</h3>
+  <p>Three new module-level helpers now back both surfaces:</p>
+  <ul>
+    <li><code>build_interaction_figures(timeline)</code> → (Sankey, donut, swimlane). The report serialises with
+    <code>to_html</code>; the app passes the same figures to <code>st.plotly_chart</code>.</li>
+    <li><code>build_dot_timeline_figure(timeline)</code> → the dot timeline, shared identically.</li>
+    <li><code>iter_update_actions(ticket)</code> → one generator of <code>(name, date, description)</code> rows for
+    both the on-screen "What Happened?" list and the report's actions block.</li>
+  </ul>
+  <p>The previously divergent <code>CRITICAL_KW</code> lists are now a single constant, and the persona/colour
+  maps live in one place.</p>
+</div>
+<div class="issue">
+  <h3><span class="badge sev-low">Low</span> <span class="badge fixed">Fixed</span> 7 &amp; 9 · Persona logic</h3>
+  <p>The three copies of <code>_grp()</code> and the name-based <code>_persona_style()</code> (which hardcoded staff
+  first names) are gone. A single <code>persona_group()</code> / <code>persona_style()</code> with
+  <code>PERSONA_COLORS</code> / <code>PERSONA_BG</code> / <code>PERSONA_ICON</code> maps is used everywhere — no
+  more per-name special-casing.</p>
+</div>
+
+<h2>Data &amp; Robustness (resolved)</h2>
+<div class="issue">
+  <h3><span class="badge sev-med">Medium</span> <span class="badge fixed">Fixed</span> 5 · DB upsert</h3>
+  <p><code>save_report_to_db</code> now runs <code>DELETE FROM executive_reports WHERE ticket_id = %s</code> before
+  the insert, so each ticket keeps exactly one current report instead of accumulating stale duplicates.</p>
+</div>
+<div class="issue">
+  <h3><span class="badge sev-med">Medium</span> <span class="badge fixed">Fixed</span> 6 · Silent failures</h3>
+  <p><code>find_report_in_db</code> and the auto-save block now log via <code>logger.warning(...)</code>; the
+  auto-save path also surfaces a <code>⚠️</code> toast so a DB problem is visible rather than swallowed.</p>
+</div>
+<div class="issue">
+  <h3><span class="badge sev-low">Low</span> <span class="badge fixed">Fixed</span> 11 · Pagination</h3>
+  <p><code>fetch_all_updates</code> stops on an empty batch, honours <code>count</code> when pagination metadata is
+  present, and has a 100-page safety cap — no premature stop when <code>page_info</code> is missing, no infinite
+  loop if the endpoint never paginates.</p>
+</div>
+<div class="issue">
+  <h3><span class="badge sev-med">Bonus</span> <span class="badge fixed">Fixed</span> + · Non-dict update guard</h3>
+  <p>Verification surfaced that <code>_build_agents_html</code>, <code>_get_csat_data</code>, and
+  <code>_build_gap_analysis</code> iterated <code>updates</code> without the <code>isinstance(u, dict)</code> guard
+  the actions code documents — a crash if a cached fake ticket ever carried integer placeholders. The guard was
+  added to all three.</p>
+</div>
+
+<h2>Cleanliness &amp; UX (resolved)</h2>
+<div class="issue">
+  <h3><span class="badge sev-low">Low</span> <span class="badge fixed">Fixed</span> 8 · Dead code &nbsp;·&nbsp; 10 · Token usage &nbsp;·&nbsp; 12 · Secrets</h3>
+  <ul>
+    <li><b>8</b> — the unused <code>parse_ts()</code> function was removed.</li>
+    <li><b>10</b> — Claude token counts are stored in session and shown as a caption
+    (<code>🧮 Claude usage: N input · N output tokens</code>) in the Ticket Overview.</li>
+    <li><b>12</b> — credential loading is wrapped in <code>try/except KeyError</code> that shows a clear
+    <code>st.error</code> naming the missing secret and calls <code>st.stop()</code>, instead of a raw traceback.</li>
+  </ul>
+</div>
+
+<h2>Intentionally not changed</h2>
+<div class="issue">
+  <h3><span class="badge sev-info">Note</span> 13 · <code>v()</code> and the value <code>0</code></h3>
+  <p>Left as-is. <code>v(0)</code> still returns "—". Changing it risks altering the intended placeholder display
+  for genuinely empty fields; flagged for awareness only.</p>
+</div>
+<div class="issue">
+  <h3><span class="badge sev-info">Note</span> 14 · Single 1,900-line module</h3>
+  <p>Left as-is. Splitting into <code>happyfox / db / analysis / report / charts</code> modules is a larger
+  architectural change; the duplication that made it painful has been removed, so a future split is now easier.</p>
+</div>
+
+<div class="footer">
+  <span>Code Review (Resolved) · app.py · Happy Link Claude TLDR Ticket Summary</span>
+  <span>Confidential — Internal Use Only</span>
+</div>
+
+</body>
+</html>
